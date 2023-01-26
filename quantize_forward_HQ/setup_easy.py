@@ -7,7 +7,7 @@ setup(
         CUDAExtension(name='quantize_forward_easy', sources=[
             'quantize_forward_easy.cpp',
             'quantize_forward_easy_kernel.cu',
-        ], include_dirs=["/home/ubuntu/lichangh20/ANN_project_advance/qmatmul/cutlass/include"],
+        ], include_dirs=["../cutlass/include"],
         extra_compile_args=["-std=c++17"])
     ],
     cmdclass={

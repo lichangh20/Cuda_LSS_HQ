@@ -7,7 +7,7 @@ setup(
         CUDAExtension(name='quantize_grad_weight_speed', sources=[
             'quantize_grad_weight_speed.cpp',
             'quantize_grad_weight_speed_kernel.cu'
-        ], include_dirs=["../cutlass/include"],
+        ], include_dirs=["/home/ubuntu/lichangh20/ANN_project_advance/cutlass/include"],
         extra_compile_args=["-std=c++17"])
     ],
     cmdclass={

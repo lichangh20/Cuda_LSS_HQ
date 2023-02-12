@@ -13,7 +13,7 @@ class MatrixConfig:
         self.M = 4096
         self.K = 4096
         self.N = 4096
-        self.testTurn = 30
+        self.testTurn = 1
         self.num_bits = 4
         self.group_size = 32
         
@@ -47,20 +47,30 @@ cuda_gemm2_time = []
 cuda_dequantize_time = []
 python_ordgemm_flops = []
 
+
+phi_list = []
+small_index_list = []
+norm_list = []
+first_transform_list = []
 class PreconditionerTest:
     def __init__(self):
-        self.x = torch.randn(mconfig.K, mconfig.M).cuda().half()
-        self.y = torch.randn(mconfig.K, mconfig.N).cuda().half()
+        self.x = torch.randn(mconfig.K, mconfig.M).cuda().half() / 100
+        self.y = torch.randn(mconfig.K, mconfig.N).cuda().half() / 100
         self.num_bins = 2 ** mconfig.num_bits - 1
         self.scale_y = max(abs(self.y.min()), abs(self.y.max())) / 7
         self.quantize_y = self.y / self.scale_y
         self.quantize_y.clamp_(-8.0, self.num_bins-8).round_()
         self.quantize_y = self.quantize_y.to(torch.int8)
+        self.dequantize_y = self.quantize_y * self.scale_y
         self.zero_point1 = 0
         self.scale1 = 0
         self.zero_point2 = 0
         self.scale2 = 0
         self.hadmard = T[mconfig.group_size].half()
+        self.weight = torch.randn(mconfig.M, mconfig.N).cuda().half() / 50
+        self.hadamard_weight = self.weight.view(-1, mconfig.group_size).matmul(self.hadmard).view(self.weight.shape)
+        self.scale_weight = torch.randn(1).cuda().half()
+        self.weight_phi = 0
         
     def TwoLayerQuantizeWeight_cuda_speed(self, input):
         total_time = 0
@@ -83,15 +93,13 @@ class PreconditionerTest:
         for i in range(mconfig.testTurn + 1):
             time1 = time.time()
             
-            hy = y_batch.matmul(self.hadmard).view(y_shape)
             qmatmul.synchronize()
             time2 = time.time()
 
-            second_transform = quantize_grad_weight_speed.quantize(input, self.quantize_y, self.scale_y, hy, self.num_bins)
+            second_transform = quantize_grad_weight_speed.quantize(input, self.quantize_y, self.scale_y, self.dequantize_y, self.num_bins, self.hadamard_weight, self.scale_weight, self.weight_phi)
             qmatmul.synchronize()
             time3 = time.time()
-            out_shape = second_transform[0].shape
-            output = second_transform[0].view(-1,mconfig.group_size).matmul(self.hadmard).view(out_shape)
+            # output = second_transform[0]
             qmatmul.synchronize()
             time4 = time.time()
             if i >= 1:
@@ -105,11 +113,50 @@ class PreconditionerTest:
                 gemm1_time += second_transform[1][5]
                 gemm2_time += second_transform[1][6]
                 dequantize_time += second_transform[1][7]
+        
                 
         print("LSS cuda MM speed:")
-        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
-        # print("output is:")
-        # print(output)
+        # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        print("output is:")
+        print(second_transform[4])
+        # print("sum_y1 is:")
+        # print(second_transform[2])
+        # print("sum_y2 is:")
+        # print(second_transform[3])
+        # print("q_w is:")
+        # print(second_transform[2])
+        print("indicate_middle is:")
+        print(second_transform[3])
+        # print("grad_scale is:")
+        # print(second_transform[5])
+        # print("norm_large is:")
+        # print(second_transform[3])
+        # print("second transform is:")
+        # print(second_transform[0])
+        # print("gemm1 is:")
+        # print(second_transform[0])
+        # print("gemm2 is:")
+        # print(second_transform[2])
+        print("grad of scale_weight is:")
+        print(second_transform[2])
+        print("grad of weight is:")
+        print(second_transform[0])
+        # print("small num is:")
+        # print(second_transform[0])
+        # print("small index is:")
+        # print(second_transform[4])
+        # print("sample_x1 is:")
+        # print(second_transform[2].t())
+        # print("large index is:")
+        # print(second_transform[3])
+        # print("sample_x2 is:")
+        # print(second_transform[3].t())
+        # print("dequantize_sample y is:")
+        # print(second_transform[0].t())
+        # print("sample_y2 is:")
+        # print(second_transform[0].t())
+        # norm_list.append(second_transform[2])
+        # first_transform_list.append(second_transform[0])
         print()
         twolayer_cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         cuda_hadmard_time.append(hadmard_time)
@@ -121,6 +168,8 @@ class PreconditionerTest:
         cuda_gemm1_time.append(gemm1_time)
         cuda_gemm2_time.append(gemm2_time)
         cuda_dequantize_time.append(dequantize_time)
+        import IPython
+        IPython.embed()
         
     def Gemm_ordinary_python(self, x, y):
         total_time = 0
@@ -184,6 +233,7 @@ class PreconditionerTest:
         actual_time = 0
         for i in range(mconfig.testTurn + 1):
             time1 = time.time()
+            #TODO: Twolayer quantize first tensor
             mn = min(input.min() - 1e-8, 0)
             mx = max(input.max() + 1e-8, 0)
             
@@ -229,33 +279,102 @@ class PreconditionerTest:
             output_dequantize = torch.cat([first_quantize, second_quantize], dim=0)
             
             # leverage score
-            y_shape = self.y.shape
-            hy = self.y.view(-1,mconfig.group_size).matmul(self.hadmard).view(y_shape)
-            y2 = torch.cat([hy, hy], 0)
+            # TODO: leverage score and sampling out
+            # from torch.distributions import Gumbel
+            y2 = torch.cat([self.dequantize_y, self.dequantize_y], 0)
             x_len = torch.linalg.norm(output_dequantize, dim=1)
             y_len = torch.linalg.norm(y2, dim=1)
             vec_norm = x_len.mul(y_len)
+            len_norm = len(vec_norm)
+            norm_weight = vec_norm / vec_norm.sum()
+            # weight_phi = norm_weight
             
+            # values,indices = torch.topk(weight_phi, len(norm_weight) // 2)
+            # small = (indices < len(norm_weight) // 2)
+            small_num = norm_weight[:len_norm // 2].sum() * len_norm / 2 
+            small_num = (small_num / 32).round() * 32
+            import IPython
+            if small_num > len_norm // 2:
+                small_num = small_num - 32
+            large_num = len_norm // 2 - small_num
+            small_num = small_num.int()
+            large_num = large_num.int()
+            
+            norm_weight = torch.log(norm_weight)
+            # #Todo:currently Gumbel is not avaliable in libtorch
+            # weight_phi = torch.distributions.Gumbel(norm_weight, torch.ones_like(norm_weight)).rsample()
+            weight_phi = norm_weight
+            # IPython.embed()
+            # Todo:test the correctness of cuda
+            self.weight_phi = weight_phi
+            
+            
+            # IPython.embed()
+            small_values, small_indices = torch.topk(weight_phi[:len(norm_weight) // 2], small_num)   
+            large_values, large_indices = torch.topk(weight_phi[len(norm_weight) // 2:], large_num)
+            
+            index = torch.cat([small_indices, large_indices + len(norm_weight) // 2])
+            
+            cnt = 0
+            norm_weight_loop = vec_norm * len_norm / (2 * vec_norm.sum())
+
+            while norm_weight_loop.max() > 1 and cnt < len_norm / 2:
+                small_index = torch.nonzero((norm_weight_loop < 1)).squeeze()
+                small_value = norm_weight_loop[small_index]
+                cnt = len_norm - len(small_index)
+                norm_weight_loop = torch.clamp(norm_weight_loop, 0, 1)
+                if small_value.max() == 0 and small_value.min() == 0:
+                    break
+                small_value = small_value * (len_norm // 2 - cnt) / small_value.sum()
+                norm_weight_loop[small_index] = small_value
+
+            
+            # sample_index = torch.bernoulli(norm_weight_loop)
+            # index = torch.nonzero((sample_index == 1)).squeeze()
+            norm_weight_loop[norm_weight_loop == 0] = 1e-10
+            output = output / norm_weight_loop.unsqueeze(1)
+            # output_second = second_transform[large_indices] / norm_weight_loop[large_indices + len_norm // 2].unsqueeze(1)
+            
+            # small = (index < len_norm / 2)
+            # small_num = small.sum()
+            # large_num = len(index) - small_num 
+            
+            import IPython
+            # IPython.embed()
             # sampling
-            quart_size = int(output.size(0) / 4)
-            output_list = torch.split(output, [quart_size, quart_size, quart_size, quart_size], 0)
-            sample_x = torch.cat([output_list[0], output_list[2]], 0)
-            half_size = int(self.quantize_y.size(0) / 2)
-            half_list = torch.split(self.quantize_y, [half_size, half_size], 0)
-            sample_y = torch.cat([half_list[0], half_list[0]],0)
+            # quart_size = int(output.size(0) / 4)
+            # output_list = torch.split(output, [quart_size, quart_size, quart_size, quart_size], 0)
+            # sample_x = torch.cat([output_list[0], output_list[2]], 0)
+            # half_size = int(self.quantize_y.size(0) / 2)
+            # half_list = torch.split(self.quantize_y, [half_size, half_size], 0)
+            # sample_y = torch.cat([half_list[0], half_list[0]],0)
+            sample_x = output[index, :]
+            sample_y = y2[index, :]
             
             # dequantize inputx
-            half_shape = int(sample_x.shape[0] / 2)
-            first, second = torch.split(sample_x,[half_shape, half_shape], dim=0)
+            first, second = torch.split(sample_x,[small_num, large_num], dim=0)
             first = (first+8) / self.scale1 + self.zero_point1
             second = (second+8) / self.scale2 + self.zero_point2
             dequantize_sample_x = torch.cat([first, second], dim=0)
             
             # dequantize inputy
-            dequantize_sample_y = sample_y / self.scale_y 
-            h_output = dequantize_sample_x.t().matmul(dequantize_sample_y)
-            out_shape = h_output.shape
-            output = h_output.view(-1,mconfig.group_size).matmul(self.hadmard).view(out_shape)
+            dequantize_sample_y = sample_y 
+            grad_output = (dequantize_sample_x.t().matmul(dequantize_sample_y)).half()
+            
+            # calculate grad_weight and grad_scale_weight through LSQ
+            q_w = self.hadamard_weight / self.scale_weight
+            indicate_small = (q_w < -8).half()
+            indicate_big = (q_w > 7).half()
+            indicate_middle = 1.0 - indicate_small - indicate_big
+            grad_scale = 1.0 / math.sqrt(self.hadamard_weight.numel() * 7)
+            grad_alpha = ((indicate_small * -8 + indicate_big * 7 + indicate_middle * (
+                    -q_w + q_w.round())) * grad_output * grad_scale).sum().unsqueeze(dim=0)
+            #Todo:need to matmul a hadamard matrix?
+            h_grad_input = indicate_middle * grad_output
+            grad_input = h_grad_input.view(-1,mconfig.group_size).matmul(self.hadmard).view(h_grad_input.shape)
+            
+            # calculate grad_weight before LSQ and grad_scale_weight
+            
             
             torch.cuda.synchronize()
             time2 = time.time()
@@ -263,11 +382,57 @@ class PreconditionerTest:
             if i >= 1:
                 total_time += time2 - time1
             
+            sample_x1 = output[small_indices, :]
+            sample_x2 = output[large_indices + len(norm_weight) // 2, :]
+            sample_y1 = self.quantize_y[small_indices] * self.scale_y
+            sample_y2 = self.quantize_y[large_indices] * self.scale_y
+            gemm1 = torch.matmul(sample_x1.t(), sample_y1)
+            gemm2 = torch.matmul(sample_x2.t(), sample_y2)
         print("quantize python:")
-        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
-        print()
-        # print("final output is:")
-        # print(output)
+        # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        # print()
+        print("final output is:")
+        print(grad_output)
+        # print("q_w is:")
+        # print(q_w)
+        print("indicate_middle is:")
+        print(indicate_middle)
+        # print("grad_scale is:")
+        # print(grad_scale)
+        # print("second transform large is:")
+        # print(second_transform[large_indices, :])
+        # print("norm_large is:")
+        # print(norm_weight_loop[large_indices + len_norm // 2])
+        # print("gemm1 is:")
+        # print(gemm1)
+        # print("gemm2 is:")
+        # print(gemm2)
+        # print("small num is:")
+        # print(small_num)
+        # print("small index is:")
+        # print(small_indices)
+        # print("sample_x1 is:")
+        # print(sample_x1)
+        # print("large index is:")
+        # print(large_indices)
+        # print("sample_x2 is:")
+        # print(sample_x2)
+        # print("sample_y2 is:")
+        # print(sample_y2)
+        # print("dequantize_sample y is:")
+        # print(dequantize_sample_y)
+        # print("sample x2 is:")
+        # print(sample_x2)
+        # print("sample x2_2 is:")
+        # print(output_second)
+        # norm_list.append(norm_weight_loop)
+        # first_transform_list.append(first_transform)
+        print("grad of scale_weight is:")
+        print(grad_alpha)
+        print("grad of weight(before hadamard) is:")
+        print(h_grad_input)
+        import IPython
+        # IPython.embed()
          
 def draw_picture_flops():
     plt.figure(figsize=(25, 20))
@@ -333,16 +498,18 @@ def draw_picture_full():
     
     
 if __name__=="__main__":
-    for (m,n,k) in [(4608, 5120, 6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
+    for (m,n,k) in [(4608, 5120, 6144)]:
+    # for (m,n,k) in [(4608, 5120, 6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
         print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
         mconfig.M = m
         mconfig.N = n
         mconfig.K = k
         matrix_shape.append((mconfig.M, mconfig.N, mconfig.K))
         test = PreconditionerTest()
+        test.TwoLayerQuantizeWeight_python(test.x)
         test.TwoLayerQuantizeWeight_cuda_speed(test.x)
-        test.Gemm_ordinary_python(test.x, test.y)
-        test.HadmardQuantize_cuda_speed(test.x.t().contiguous(), test.y.t().contiguous())
+        # test.Gemm_ordinary_python(test.x, test.y)
+        # test.HadmardQuantize_cuda_speed(test.x.t().contiguous(), test.y.t().contiguous())
 
-    draw_picture_flops()
-    draw_picture_full()
+    # draw_picture_flops()
+    # draw_picture_full()

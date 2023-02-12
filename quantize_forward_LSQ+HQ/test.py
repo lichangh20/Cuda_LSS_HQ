@@ -50,29 +50,35 @@ class PreconditionerTest:
         self.scale_hx = 0
         self.scale_hy = 0
         
-    def HadmardQuantize_python(self, x, y):
-        # currently suppose weight not transpose
-        # TODO: first calculate matrix parameter, then measure time
+    # x corresponds to input, y corresponds to weight
+    # step1: hadamard quantize input and weight
+    # step2: LSQ forward quantize input and weight, with scale_input and scale_weight
+    # step3: linear forward input.matmul(weight.t()) and return the result
+    def HadmardQuantize_python(self, input, weight):
         hadmard = T[mconfig.group_size].half()
-        x_shape = x.shape
-        x_batch = x.view(-1,mconfig.group_size)
-        h_x = x_batch.matmul(hadmard).view(x_shape)
+        input_shape = input.shape
+        input_batch = input.view(-1,mconfig.group_size)
+        h_input = input_batch.matmul(hadmard).view(input_shape)
         
-        y_shape = y.shape
-        y_batch = y.view(-1,mconfig.group_size)
-        h_y = y_batch.matmul(hadmard).view(y_shape)
+        weight_shape = weight.shape
+        weight_batch = weight.view(-1,mconfig.group_size)
+        h_weight = weight_batch.matmul(hadmard).view(weight_shape)
         
-        self.scale_hx = max(abs(h_x.max()), abs(h_x.min())) / 7
-        self.scale_hy = max(abs(h_y.max()), abs(h_y.min())) / 7
+        self.scale_hx = max(abs(h_input.max()), abs(h_input.min())) / 7
+        self.scale_hy = max(abs(h_weight.max()), abs(h_weight.min())) / 7
         
         total_time = 0
         for i in range(mconfig.testTurn + 1):
+            # step1: hadamard quantize input and weight
             time1 = time.time()
-            h_x = x_batch.matmul(hadmard).view(x_shape)
-            h_y = y_batch.matmul(hadmard).view(y_shape)
-        
-            matrix1 = (h_x / self.scale_hx).round_()
-            matrix2 = (h_y / self.scale_hy).round_()
+            h_input = input_batch.matmul(hadmard).view(input_shape)
+            h_weight = weight_batch.matmul(hadmard).view(weight_shape)
+            
+            # step2: LSQ forward quantize input and weight, with scale_input and scale_weight
+            matrix1 = (h_input / self.scale_hx).round_().clamp(-8, 7)
+            matrix2 = (h_weight / self.scale_hy).round_().clamp(-8, 7)
+            # grad_scale_input = 1.0 / math.sqrt(input.numel() * 7)
+            # grad_scale_weight = 1.0 / math.sqrt(weight.numel() * 7)
         
             out = self.scale_hx * self.scale_hy * matrix1.matmul(matrix2.t())
             torch.cuda.synchronize()
@@ -80,10 +86,10 @@ class PreconditionerTest:
             if i >= 1:
                 total_time += time2 - time1
         print("HQ python MM speed:")
-        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         print()
-        # print("final output is:")
-        # print(out)
+        print("final output is:")
+        print(out)
 
     def Gemm_ordinary_python(self, x, y):
         total_time = 0
@@ -123,6 +129,7 @@ class PreconditionerTest:
             h_y = y_batch.matmul(hadmard).view(y_shape)
             qmatmul.synchronize()
             time_flag = time.time()
+            # self.scale_hx = torch.tensor(self.scale_hx)
             out2 = quantize_forward_easy.quantize(h_x,h_y,self.scale_hx, self.scale_hy)
             qmatmul.synchronize()
             if i>= 1:
@@ -135,8 +142,9 @@ class PreconditionerTest:
                 time2 = time.time()
                 total_time += time2 - time1
         print("HQ cuda MM speed:")
-        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
-        # print("    output is:", out2[0])
+        # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        print("    output is:")
+        print(out2[0])
         print()
         cuda_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         cuda_hadmard_time.append(hadmard_time)
@@ -188,7 +196,8 @@ def draw_picture_full():
     
 if __name__=="__main__":
     
-    for (m,n,k) in [(4608, 5120, 6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
+    # for (m,n,k) in [(4608, 5120, 6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
+    for (m,n,k) in [(4608, 5120, 6144)]:
             print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
             mconfig.M = m
             mconfig.N = n
@@ -196,8 +205,8 @@ if __name__=="__main__":
             matrix_shape.append((mconfig.M, mconfig.N, mconfig.K))
             
             test = PreconditionerTest()
-            # test.HadmardQuantize_python(test.x,test.y)
+            test.HadmardQuantize_python(test.x,test.y)
             test.HadmardQuantize_cuda_speed(test.x, test.y)
             # test.Gemm_ordinary_python(test.x, test.y)
     
-    draw_picture_full()
+    # draw_picture_full()

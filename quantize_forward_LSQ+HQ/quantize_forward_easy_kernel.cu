@@ -26,7 +26,7 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
         scalar_t temp1 = MatI[x] / scale;
         int temp2 = temp1;
         int bias = (temp1 - temp2) * 2;
-        MatO[x] = temp2 + bias;
+        MatO[x] = std::clamp(temp2 + bias, -8, 7);
     }
 }
 
@@ -147,7 +147,7 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm, scalar_t * __restri
     }
 }
 
-std::pair<torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
+std::tuple<torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
     std::vector<double> time_vector;
     cudaError_t result;
     //TODO: remember that input y is transposed
@@ -246,5 +246,5 @@ std::pair<torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor hx, to
     time_vector.push_back(dequantize_time);
  
     // return output;
-    return std::make_pair(output, time_vector);
+    return std::make_tuple(output, time_vector, q_x, q_y);
 }

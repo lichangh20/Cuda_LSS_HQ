@@ -96,37 +96,43 @@ class PreconditionerTest:
             qmatmul.synchronize()
             time2 = time.time()
 
-            second_transform = quantize_grad_weight_speed.quantize(input, self.quantize_y, self.scale_y, self.dequantize_y, self.num_bins, self.hadamard_weight, self.scale_weight, self.weight_phi)
-            qmatmul.synchronize()
+            first_out = quantize_grad_weight_speed.first_quantize(input, self.dequantize_y, self.num_bins)
+            # IPython.embed()
+            weight_phi = torch.distributions.Gumbel(self.norm_weight, torch.ones_like(self.norm_weight)).rsample()
+            weight_phi = self.weight_phi
+            second_transform = quantize_grad_weight_speed.second_quantize(first_out[1], first_out[2],first_out[3],first_out[4],first_out[5],first_out[6],
+                                                                         first_out[7],first_out[8],first_out[9],first_out[10],first_out[11],first_out[12], first_out[13],                                                                 
+                                                                         first_out[14], first_out[15], weight_phi, self.quantize_y, self.scale_y, self.hadamard_weight, self.scale_weight)
             time3 = time.time()
             # output = second_transform[0]
             qmatmul.synchronize()
             time4 = time.time()
-            if i >= 1:
-                total_time += time4 - time1
-                hadmard_time += (time2 - time1) + (time4 - time3)
-                quantize1_time += second_transform[1][0]
-                quantize2_time += second_transform[1][1] 
-                leverage_time += second_transform[1][2]
-                sample_time += second_transform[1][3]
-                pack_time += second_transform[1][4]
-                gemm1_time += second_transform[1][5]
-                gemm2_time += second_transform[1][6]
-                dequantize_time += second_transform[1][7]
+            # if i >= 1:
+                # total_time += time4 - time1
+                # hadmard_time += (time2 - time1) + (time4 - time3)
+                # quantize1_time += second_transform[1][0]
+                # quantize2_time += second_transform[1][1] 
+                # leverage_time += second_transform[1][2]
+                # sample_time += second_transform[1][3]
+                # pack_time += second_transform[1][4]
+                # gemm1_time += second_transform[1][5]
+                # gemm2_time += second_transform[1][6]
+                # dequantize_time += second_transform[1][7]
         
                 
+        first_transform_list.append(second_transform[1])
         print("LSS cuda MM speed:")
         # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         print("output is:")
-        print(second_transform[4])
+        print(second_transform[2])
         # print("sum_y1 is:")
         # print(second_transform[2])
         # print("sum_y2 is:")
         # print(second_transform[3])
         # print("q_w is:")
         # print(second_transform[2])
-        print("indicate_middle is:")
-        print(second_transform[3])
+        # print("indicate_middle is:")
+        # print(second_transform[3])
         # print("grad_scale is:")
         # print(second_transform[5])
         # print("norm_large is:")
@@ -135,12 +141,14 @@ class PreconditionerTest:
         # print(second_transform[0])
         # print("gemm1 is:")
         # print(second_transform[0])
+        # print("first_transform is:")
+        # print(second_transform[1])
         # print("gemm2 is:")
-        # print(second_transform[2])
+        # print(second_transform[1])
         print("grad of scale_weight is:")
-        print(second_transform[2])
-        print("grad of weight is:")
-        print(second_transform[0])
+        print(second_transform[1])
+        # print("grad of weight is:")
+        # print(second_transform[0])
         # print("small num is:")
         # print(second_transform[0])
         # print("small index is:")
@@ -158,7 +166,7 @@ class PreconditionerTest:
         # norm_list.append(second_transform[2])
         # first_transform_list.append(second_transform[0])
         print()
-        twolayer_cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        # twolayer_cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         cuda_hadmard_time.append(hadmard_time)
         cuda_quantize1_time.append(quantize1_time)
         cuda_quantize2_time.append(quantize2_time)
@@ -234,8 +242,8 @@ class PreconditionerTest:
         for i in range(mconfig.testTurn + 1):
             time1 = time.time()
             #TODO: Twolayer quantize first tensor
-            mn = min(input.min() - 1e-8, 0)
-            mx = max(input.max() + 1e-8, 0)
+            mn = min(input.min() - 1e-8, 0).float()
+            mx = max(input.max() + 1e-8, 0).float()
             
             self.zero_point1 = mn
             self.scale1 = self.num_bins / (mx - mn)
@@ -250,14 +258,14 @@ class PreconditionerTest:
 
             self.scale1 = self.num_bins / (mx - mn)
             
-            first_transform = (input - self.zero_point1) * self.scale1 - 8
+            first_transform = (input.float() - self.zero_point1) * self.scale1 - 8
             first_transform.clamp_(-8.0, self.num_bins-8).round_()
-            first_quantize = (first_transform+8) / self.scale1 + self.zero_point1
+            first_quantize = ((first_transform+8) / self.scale1 + self.zero_point1).half()
             
             residual = input - first_quantize
             
-            mn = min(residual.min() - 1e-8, 0)
-            mx = max(residual.max() + 1e-8, 0)
+            mn = min(residual.min() - 1e-8, 0).float()
+            mx = max(residual.max() + 1e-8, 0).float()
             
             self.zero_point2 = mn
             self.scale2 = self.num_bins / (mx - mn)
@@ -270,11 +278,11 @@ class PreconditionerTest:
             elif iqzero == 0:
                 self.zero_point2, mn = 0, 0
             self.scale2 = self.num_bins / (mx - mn)
-            second_transform = (residual - self.zero_point2) * self.scale2 - 8
+            second_transform = (residual.float() - self.zero_point2) * self.scale2 - 8
             noise = second_transform.new(second_transform.shape).uniform_(-0.5, 0.5)
-            # second_transform.add_(noise)
+            second_transform.add_(noise)
             second_transform.clamp_(-8.0, self.num_bins-8).round_()
-            second_quantize = (second_transform+8) / self.scale2 + self.zero_point2
+            second_quantize = ((second_transform+8) / self.scale2 + self.zero_point2).half()
             output = torch.cat([first_transform, second_transform], dim=0)
             output_dequantize = torch.cat([first_quantize, second_quantize], dim=0)
             
@@ -284,7 +292,7 @@ class PreconditionerTest:
             y2 = torch.cat([self.dequantize_y, self.dequantize_y], 0)
             x_len = torch.linalg.norm(output_dequantize, dim=1)
             y_len = torch.linalg.norm(y2, dim=1)
-            vec_norm = x_len.mul(y_len)
+            vec_norm = x_len.mul(y_len).float()
             len_norm = len(vec_norm)
             norm_weight = vec_norm / vec_norm.sum()
             # weight_phi = norm_weight
@@ -302,11 +310,12 @@ class PreconditionerTest:
             
             norm_weight = torch.log(norm_weight)
             # #Todo:currently Gumbel is not avaliable in libtorch
-            # weight_phi = torch.distributions.Gumbel(norm_weight, torch.ones_like(norm_weight)).rsample()
-            weight_phi = norm_weight
+            weight_phi = torch.distributions.Gumbel(norm_weight, torch.ones_like(norm_weight)).rsample()
+            # weight_phi = norm_weight
             # IPython.embed()
             # Todo:test the correctness of cuda
             self.weight_phi = weight_phi
+            self.norm_weight = norm_weight
             
             
             # IPython.embed()
@@ -332,7 +341,8 @@ class PreconditionerTest:
             # sample_index = torch.bernoulli(norm_weight_loop)
             # index = torch.nonzero((sample_index == 1)).squeeze()
             norm_weight_loop[norm_weight_loop == 0] = 1e-10
-            output = output / norm_weight_loop.unsqueeze(1)
+            # output = output / norm_weight_loop.unsqueeze(1)
+            output_dequantize = output_dequantize / norm_weight_loop.unsqueeze(1)
             # output_second = second_transform[large_indices] / norm_weight_loop[large_indices + len_norm // 2].unsqueeze(1)
             
             # small = (index < len_norm / 2)
@@ -342,24 +352,21 @@ class PreconditionerTest:
             import IPython
             # IPython.embed()
             # sampling
-            # quart_size = int(output.size(0) / 4)
-            # output_list = torch.split(output, [quart_size, quart_size, quart_size, quart_size], 0)
-            # sample_x = torch.cat([output_list[0], output_list[2]], 0)
-            # half_size = int(self.quantize_y.size(0) / 2)
-            # half_list = torch.split(self.quantize_y, [half_size, half_size], 0)
-            # sample_y = torch.cat([half_list[0], half_list[0]],0)
-            sample_x = output[index, :]
+            # sample_x = output[index, :]
+            sample_x = output_dequantize[index, :]
             sample_y = y2[index, :]
             
             # dequantize inputx
-            first, second = torch.split(sample_x,[small_num, large_num], dim=0)
-            first = (first+8) / self.scale1 + self.zero_point1
-            second = (second+8) / self.scale2 + self.zero_point2
-            dequantize_sample_x = torch.cat([first, second], dim=0)
+            # first, second = torch.split(sample_x,[small_num, large_num], dim=0)
+            # first = (first+8) / self.scale1 + self.zero_point1
+            # second = (second+8) / self.scale2 + self.zero_point2
+            # dequantize_sample_x = torch.cat([first, second], dim=0)
+            dequantize_sample_x = sample_x.half()
+            # dequantize_sample_x2 = (output_dequantize / norm_weight_loop.unsqueeze(1))[index, :]
             
             # dequantize inputy
             dequantize_sample_y = sample_y 
-            grad_output = (dequantize_sample_x.t().matmul(dequantize_sample_y)).half()
+            grad_output = (dequantize_sample_x.t().matmul(dequantize_sample_y))
             
             # calculate grad_weight and grad_scale_weight through LSQ
             q_w = self.hadamard_weight / self.scale_weight
@@ -370,9 +377,7 @@ class PreconditionerTest:
             grad_alpha = ((indicate_small * -8 + indicate_big * 7 + indicate_middle * (
                     -q_w + q_w.round())) * grad_output * grad_scale).sum().unsqueeze(dim=0)
             #Todo:need to matmul a hadamard matrix?
-            h_grad_input = indicate_middle * grad_output
-            grad_input = h_grad_input.view(-1,mconfig.group_size).matmul(self.hadmard).view(h_grad_input.shape)
-            
+            grad_input = indicate_middle * grad_output            
             # calculate grad_weight before LSQ and grad_scale_weight
             
             
@@ -382,12 +387,14 @@ class PreconditionerTest:
             if i >= 1:
                 total_time += time2 - time1
             
-            sample_x1 = output[small_indices, :]
-            sample_x2 = output[large_indices + len(norm_weight) // 2, :]
+            sample_x1 = output[small_indices, :].half()
+            sample_x2 = output[large_indices + len(norm_weight) // 2, :].half()
             sample_y1 = self.quantize_y[small_indices] * self.scale_y
             sample_y2 = self.quantize_y[large_indices] * self.scale_y
             gemm1 = torch.matmul(sample_x1.t(), sample_y1)
             gemm2 = torch.matmul(sample_x2.t(), sample_y2)
+            
+        first_transform_list.append(first_transform)
         print("quantize python:")
         # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         # print()
@@ -395,8 +402,8 @@ class PreconditionerTest:
         print(grad_output)
         # print("q_w is:")
         # print(q_w)
-        print("indicate_middle is:")
-        print(indicate_middle)
+        # print("indicate_middle is:")
+        # print(indicate_middle)
         # print("grad_scale is:")
         # print(grad_scale)
         # print("second transform large is:")
@@ -405,12 +412,18 @@ class PreconditionerTest:
         # print(norm_weight_loop[large_indices + len_norm // 2])
         # print("gemm1 is:")
         # print(gemm1)
+        # print("first_transform is:")
+        # print(first_transform)
         # print("gemm2 is:")
         # print(gemm2)
         # print("small num is:")
         # print(small_num)
         # print("small index is:")
         # print(small_indices)
+        # print("dequantize_sample_x is:")
+        # print(dequantize_sample_x)
+        # print("dequantize_sample_x2 is:")
+        # print(dequantize_sample_x2)
         # print("sample_x1 is:")
         # print(sample_x1)
         # print("large index is:")
@@ -429,8 +442,8 @@ class PreconditionerTest:
         # first_transform_list.append(first_transform)
         print("grad of scale_weight is:")
         print(grad_alpha)
-        print("grad of weight(before hadamard) is:")
-        print(h_grad_input)
+        # print("grad of weight(before hadamard) is:")
+        # print(grad_input)
         import IPython
         # IPython.embed()
          
@@ -498,7 +511,8 @@ def draw_picture_full():
     
     
 if __name__=="__main__":
-    for (m,n,k) in [(4608, 5120, 6144)]:
+    # for (m,n,k) in [(4608, 5120, 6144)]:
+    for (m,n,k) in [(768, 768, 20)]:
     # for (m,n,k) in [(4608, 5120, 6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
         print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
         mconfig.M = m

@@ -132,21 +132,21 @@ class PreconditionerTest:
             # self.scale_hx = torch.tensor(self.scale_hx)
             out2 = quantize_forward_easy.quantize(h_x,h_y,self.scale_hx, self.scale_hy)
             qmatmul.synchronize()
-            if i>= 1:
-                hadmard_time += time_flag - time1
-                quantize1_time += out2[1][0]
-                quantize2_time += out2[1][1]
-                pack_time += out2[1][2]
-                gemm_time += out2[1][3]
-                dequantize_time += out2[1][4]
-                time2 = time.time()
-                total_time += time2 - time1
+            # if i>= 1:
+            #     hadmard_time += time_flag - time1
+            #     quantize1_time += out2[1][0]
+            #     quantize2_time += out2[1][1]
+            #     pack_time += out2[1][2]
+            #     gemm_time += out2[1][3]
+            #     dequantize_time += out2[1][4]
+            #     time2 = time.time()
+            #     total_time += time2 - time1
         print("HQ cuda MM speed:")
         # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         print("    output is:")
         print(out2[0])
         print()
-        cuda_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        # cuda_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         cuda_hadmard_time.append(hadmard_time)
         cuda_quantize1_time.append(quantize1_time)
         cuda_quantize1_flops.append(1e-12 * mconfig.M * mconfig.K * mconfig.testTurn * 2 / quantize1_time)

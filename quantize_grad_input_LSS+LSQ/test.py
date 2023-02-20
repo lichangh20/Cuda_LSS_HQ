@@ -43,6 +43,8 @@ cuda_gemm1_time = []
 cuda_gemm2_time = []
 cuda_dequantize_time = []
 
+x1_list = []
+y_list = []
 class PreconditionerTest:
     def __init__(self):
         self.x = torch.randn(mconfig.M, mconfig.K).cuda().half() / 100
@@ -68,8 +70,8 @@ class PreconditionerTest:
         total_time = 0
         for i in range(mconfig.testTurn + 1):
             time1 = time.time()
-            mn = min(input.min() - 1e-8, 0)
-            mx = max(input.max() + 1e-8, 0)
+            mn = min(input.min() - 1e-8, 0).float()
+            mx = max(input.max() + 1e-8, 0).float()
             
             self.zero_point1 = mn
             self.scale1 = self.num_bins / (mx - mn)
@@ -84,14 +86,14 @@ class PreconditionerTest:
 
             self.scale1 = self.num_bins / (mx - mn)
             
-            first_transform = (input - self.zero_point1) * self.scale1 - 8
+            first_transform = (input.float() - self.zero_point1) * self.scale1 - 8
             first_transform.clamp_(-8.0, self.num_bins-8).round_()
-            first_quantize = (first_transform+8) / self.scale1 + self.zero_point1
+            first_quantize = ((first_transform+8) / self.scale1 + self.zero_point1).half()
             
             residual = input - first_quantize
             
-            mn = min(residual.min() - 1e-8, 0)
-            mx = max(residual.max() + 1e-8, 0)
+            mn = min(residual.min() - 1e-8, 0).float()
+            mx = max(residual.max() + 1e-8, 0).float()
             
             self.zero_point2 = mn
             self.scale2 = self.num_bins / (mx - mn)
@@ -104,11 +106,11 @@ class PreconditionerTest:
             elif iqzero == 0:
                 self.zero_point2, mn = 0, 0
             self.scale2 = self.num_bins / (mx - mn)
-            second_transform = (residual - self.zero_point2) * self.scale2 - 8
+            second_transform = (residual.float() - self.zero_point2) * self.scale2 - 8
             noise = second_transform.new(second_transform.shape).uniform_(-0.5, 0.5)
-            # second_transform.add_(noise)
+            second_transform.add_(noise)
             second_transform.clamp_(-8.0, self.num_bins-8).round_()
-            second_quantize = (second_transform+8) / self.scale2 + self.zero_point2
+            second_quantize = ((second_transform+8) / self.scale2 + self.zero_point2).half()
             output = torch.cat([first_transform, second_transform], dim=0)
             output_dequantize = torch.cat([first_quantize, second_quantize], dim=0)
             
@@ -117,7 +119,7 @@ class PreconditionerTest:
             I2 = torch.cat([I,I], 0) 
             x_len = torch.linalg.norm(output_dequantize, dim=1)
             I_len = torch.linalg.norm(I2, dim=1)
-            vec_norm = x_len.mul(I_len)
+            vec_norm = x_len.mul(I_len).float()
             len_norm = len(vec_norm)
             norm_activation = vec_norm / vec_norm.sum()
             small_num = norm_activation[:len_norm // 2].sum() * len_norm / 2 
@@ -130,10 +132,11 @@ class PreconditionerTest:
             
             norm_activation = torch.log(norm_activation)
             # #Todo:currently Gumbel is not avaliable in libtorch
-            # activation_phi = torch.distributions.Gumbel(norm_weight, torch.ones_like(norm_weight)).rsample()
-            activation_phi = norm_activation
+            activation_phi = torch.distributions.Gumbel(norm_activation, torch.ones_like(norm_activation)).rsample()
+            # activation_phi = norm_activation
             # IPython.embed()
             # Todo:test the correctness of cuda
+            self.norm_activation = norm_activation
             self.activation_phi = activation_phi
             
             small_values, small_indices = torch.topk(activation_phi[:len(norm_activation) // 2], small_num)   
@@ -157,23 +160,20 @@ class PreconditionerTest:
             # sample_index = torch.bernoulli(norm_activation_loop)
             # index = torch.nonzero((sample_index == 1)).squeeze()
             norm_activation_loop[norm_activation_loop == 0] = 1e-10
-            output = output / norm_activation_loop.unsqueeze(1)
-            Ind = torch.zeros_like(output)
-            Ind[index] = 1
-            output = output.mul(Ind)
-            # import IPython
-            # IPython.embed()
-            # sample_x = (output[0:output.shape[0] // 2] + output[output.shape[0] // 2:]).half()
-            # sampling
-            # quart_size = int(output.size(0) / 4)
+            # output = output / norm_activation_loop.unsqueeze(1)
+            output_dequantize = output_dequantize / norm_activation_loop.unsqueeze(1)
             # Ind = torch.zeros_like(output)
-            # Ind[0:quart_size] = 1
-            # Ind[3*quart_size:] = 1
+            Ind = torch.zeros_like(output_dequantize)
+            Ind[index] = 1
+            # output = output.mul(Ind)
+            output_dequantize = output_dequantize.mul(Ind)
+            
             
             # dequantize inputx
-            first = (output[0:output.shape[0] // 2]+8) / self.scale1 + self.zero_point1
-            second = (output[output.shape[0] // 2:]+8) / self.scale2 + self.zero_point2
-            dequantize_sample_x = (first + second).half()
+            # first = (output[0:output.shape[0] // 2]+8) / self.scale1 + self.zero_point1
+            # second = (output[output.shape[0] // 2:]+8) / self.scale2 + self.zero_point2
+            # dequantize_sample_x = (first + second).half()
+            dequantize_sample_x = (output_dequantize[0:output_dequantize.shape[0] // 2] + output_dequantize[output_dequantize.shape[0] // 2:]).half()
             
             # dequantize inputy
             dequantize_sample_y = self.quantize_y * self.scale_y 
@@ -188,10 +188,9 @@ class PreconditionerTest:
             grad_alpha = ((indicate_small * -8 + indicate_big * 7 + indicate_middle * (
                     -q_w + q_w.round())) * grad_output * grad_scale).sum().unsqueeze(dim=0)
             #Todo:need to matmul a hadamard matrix?
-            h_grad_input = indicate_middle * grad_output
+            grad_input = indicate_middle * grad_output
             # import IPython
             # IPython.embed()
-            grad_input = h_grad_input.view(-1,mconfig.group_size).matmul(self.hadmard).view(h_grad_input.shape)
             
             # test
             # first_test = first_quantize.matmul(dequantize_sample_y)
@@ -205,9 +204,15 @@ class PreconditionerTest:
             sample_x1 = output[0:output.shape[0] // 2].half()
             sample_x2 = output[output.shape[0] // 2:].half()
             Ind_small = Ind[:Ind.shape[0] // 2]
+            Ind_large = Ind[Ind.shape[0] // 2:]
             Ind_small_index = Ind_small[small_indices,...]
             sample_y = dequantize_sample_y
             # IPython.embed()
+            sample_y_tmp = self.quantize_y
+            sample_x1_tmp = first_transform.mul(Ind_small.half())
+            gemm1_tmp = sample_x1_tmp.half().matmul(self.quantize_y.half())
+            sample_x2_tmp = second_transform.mul(Ind_large.half())
+            gemm2_tmp = sample_x2_tmp.half().matmul(self.quantize_y.half())
             gemm1 = sample_x1.matmul(sample_y)
             gemm2 = sample_x2.matmul(sample_y)
             torch.cuda.synchronize()
@@ -216,33 +221,40 @@ class PreconditionerTest:
                 total_time += time2 - time1
                 
             
+        x1_list.append(sample_x1_tmp)
+        y_list.append(sample_y_tmp)
         print("quantize python:")
+        torch.set_printoptions(precision=4)
         # print("sample_x1 is:")
-        # print(sample_x1)
+        # print(sample_x1_tmp)
         # print("sample_x2 is:")
-        # print(sample_x2)
+        # print(sample_x2_tmp)
         # print("sample_y is:")
-        # print(sample_y)
+        # print(sample_y_tmp)
         # print("small index is:")
         # print(small_indices)
         # print("Ind_small:")
         # print(Ind_small)
         # print("Ind_small_index:")
         # print(Ind_small_index)
-        print("gemm1 is:")
-        print(gemm1)
+        # print("gemm1 is:")
+        # print(gemm1_tmp)
+        # print("gemm1 is:")
+        # print(gemm1)
         # print("gemm2 is:")
         # print(gemm2)
-        print("norm activation is:")
-        print(norm_activation)
+        # print("activation_phi is:")
+        # print(activation_phi)
+        # print("norm activation is:")
+        # print(norm_activation)
         print("grad_output is:")
         print(grad_output)
         print("grad of scale_activation is:")
         print(grad_alpha)
         # print("grad of activation is:")
         # print(h_grad_input)
-        print("grad_scale is:")
-        print(grad_scale)
+        # print("grad_scale is:")
+        # print(grad_scale)
         # print("indicate_middle is:")
         # print(indicate_middle)
         # import IPython
@@ -313,47 +325,59 @@ class PreconditionerTest:
             
             qmatmul.synchronize()
             time3 = time.time()
-            second_transform = quantize_grad_input_speed.quantize(input, self.quantize_y, self.scale_y, self.dequantize_y, self.num_bins, self.hadamard_activation, self.scale_activation, self.activation_phi)
+            first_out = quantize_grad_input_speed.first_quantize(input, self.dequantize_y, self.num_bins)
+            # IPython.embed()
+            activation_phi = torch.distributions.Gumbel(self.norm_activation, torch.ones_like(self.norm_activation)).rsample()
+            activation_phi = self.activation_phi
+            second_transform = quantize_grad_input_speed.second_quantize(first_out[1], first_out[2],first_out[3],first_out[4],first_out[5],first_out[6],
+                                                                         first_out[7],first_out[8],first_out[9],first_out[10],first_out[11],first_out[12], first_out[13],                                                                 
+                                                                         first_out[14], first_out[15],activation_phi, self.quantize_y, self.scale_y, 
+                                                                         self.hadamard_activation, self.scale_activation)
             qmatmul.synchronize()
             time_flag2 = time.time()
             qmatmul.synchronize()
             time4 = time.time()
-            if i >= 1:
-                total_time += time4 - time1
-                hadmard_time += (time_flag - time1) + (time4 - time_flag2)
-                quantize1_time += time2 - time1
-                quantize2_time += second_transform[1][0] + (time3 - time2)
-                leverage_time += second_transform[1][1]
-                sample_time += second_transform[1][2]
-                pack_time += second_transform[1][3]
-                gemm1_time += second_transform[1][4]
-                gemm2_time += second_transform[1][5]
+            # if i >= 1:
+            #     total_time += time4 - time1
+            #     hadmard_time += (time_flag - time1) + (time4 - time_flag2)
+            #     quantize1_time += time2 - time1
+            #     quantize2_time += second_transform[1][0] + (time3 - time2)
+            #     leverage_time += second_transform[1][1]
+            #     sample_time += second_transform[1][2]
+            #     pack_time += second_transform[1][3]
+            #     gemm1_time += second_transform[1][4]
+            #     gemm2_time += second_transform[1][5]
                 # dequantize_time += second_transform[1][6]
                 
+        # x1_list.append(second_transform[2])
+        # y_list.append(second_transform[3].t())
         print("quantize cuda speed:")
+        torch.set_printoptions(precision=4)
         # print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
-        print("gemm1 is:")
-        print(second_transform[0])
+        # print("gemm1 is:")
+        # print(second_transform[0])
         # print("gemm2 is:")
-        # print(second_transform[2])
-        print("norm activation is:")
-        print(second_transform[2])
+        # print(second_transform[1])
+        # print("norm activation is:")
+        # print(first_out[0])
+        # print("activation_phi is:")
+        # print(activation_phi)
         print("grad_output is:")
-        print(second_transform[3])
+        print(second_transform[2])
         # print("indicate_middle is:")
         # print(second_transform[3])
         print("grad of scale_activation is:")
-        print(second_transform[4])
+        print(second_transform[1])
         # print("grad of activation is:")
-        # print(second_transform[0])
-        print("grad_scale is:")
-        print(second_transform[5])
+        # print(second_transform[2])
+        # print("grad_scale is:")
+        # print(second_transform[5])
         # print("h_output is:")
         # print(second_transform[0])
         # print("sample_x1 is:")
-        # print(second_transform[0])
-        # print("sample_x2 is:")
         # print(second_transform[2])
+        # print("sample_x2 is:")
+        # print(second_transform[3])
         # print("sample_y is:")
         # print(second_transform[3].t())
         # print("small index is:")
@@ -364,7 +388,7 @@ class PreconditionerTest:
         # print(second_transform[4])
         
         print()
-        cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        # cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         cuda_hadmard_time.append(hadmard_time)
         cuda_quantize1_time.append(quantize1_time)
         cuda_quantize2_time.append(quantize2_time)
@@ -381,6 +405,7 @@ if __name__=="__main__":
     # for (m,n,k) in [(512,512,1024),(2048,1024,1024),(4096,2048,2048),(4096,2560,3584),(5120,6144,8192),(6144,6144,9216),(15360,8704,10752)]:
     # for (m,n,k) in [(512,512,1024),(2048,1024,1024),(4096,2048,2048),(4096,2560,3584)]:
     for (m,n,k) in [(4608, 5120, 6144)]:
+    # for (m,n,k) in [(512,512,1024)]:
         print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
         mconfig.M = m
         mconfig.N = n

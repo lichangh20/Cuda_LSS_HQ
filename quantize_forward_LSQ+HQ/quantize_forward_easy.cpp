@@ -1,9 +1,9 @@
 #include <torch/extension.h>
 
 // return output, time vector, q_input, q_weight
-std::tuple<torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y);
 
-std::tuple<torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor> quantize(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
     TORCH_CHECK(hx.type().is_cuda(), "x must be a CUDA tensor!");
     TORCH_CHECK(hx.is_contiguous(), "x must be contiguous!");
     TORCH_CHECK(hx.dim() == 2, "x must be 2D!");

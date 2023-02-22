@@ -276,7 +276,8 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 
 //Todo:output high corresponds to scale1 and zero1, low corresponds to scale2 and zero2
 template<typename scalar_t>
-__global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2, scalar_t * __restrict__ output_low, scalar_t * __restrict__ output_high, 
+__global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2,
+                                        scalar_t * __restrict__ output_low, scalar_t * __restrict__ output_high, 
                                         const int64_t * sum_y_column, const float const_x1, const float const_x2,
                                         const float scale_gemm1, const float scale_gemm2, int size, int ny){
     // extern __shared__ float s[];
@@ -293,8 +294,12 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * ge
 
     if (x<size){
     //    output[x] = (gemm1[x] * scale_gemm1 + const_x1 * sumY) / norm1 + (gemm2[x] * scale_gemm2 + const_x2 * sumY) / norm2;
-        output_low[x] = gemm1[x] * scale_gemm1 + const_x1 * sumY;
-        output_high[x] = gemm2[x] * scale_gemm2 + const_x2 * sumY;
+        // float tmp1 = (gemm1[x] * scale_gemm1 + const_x1 * sumY) / norm1;
+        // output_low[x] = tmp1;
+        // float tmp2 = (gemm2[x] * scale_gemm2 + const_x2 * sumY) / norm2;
+        // output_high[x] = tmp2;
+        output_low[x] = (gemm1[x] * scale_gemm1 + const_x1 * sumY);
+        output_high[x] = (gemm2[x] * scale_gemm2 + const_x2 * sumY);
     }
 }
 
@@ -356,11 +361,11 @@ __global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, scalar
   linalg[blockIdx.x] = sqrt(sum_val);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int, float, float, float, float, int, int, int> first_quantize_cuda(torch::Tensor x, torch::Tensor y, int num_bins){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor x, int num_bins, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation){
     // std::vector<double> time_vector;
     int nx = x.size(0);
     int nz = x.size(1);
-    int ny = y.size(1);
+    int ny = qy.size(1);
 
     // cudaDeviceSynchronize();
     // clock_t time_quantize1_start = clock();
@@ -468,65 +473,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     }));
     auto vec_norm = torch::cat({torch::mul(x1_len, I_len), torch::mul(x2_len, I_len)}).to(torch::kFloat32);
     int len_norm = vec_norm.numel();
-    auto norm_activation = vec_norm / vec_norm.sum();
-    // // auto activation_phi = torch::distributions.Gumbel(norm_activation, torch::ones_like(norm_activation)).rsample();
-    // auto activation_phi = norm_activation;
-    // auto indices = std::get<1>(torch::topk(activation_phi, len_norm/2));
-    auto small_num = norm_activation.index({Slice({None, len_norm/2})}).sum()*len_norm/2;
-    // printf("small_num:\n");
-    // printf("%.3f\n", small_num.item<float>());
-    small_num = (small_num / 32).round() * 32;
-    if (small_num.item<float>() > len_norm/2) {
-        small_num = small_num - 32;
-    }
-    auto large_num = len_norm / 2 - small_num;
-    int small_num_ = small_num.item<int>();
-    int large_num_ = large_num.item<int>();
-    norm_activation.index_put_({norm_activation == 0}, 1e-10);
-    norm_activation = torch::log(norm_activation);
-
-    // using namespace torch;
-    // torch::distributions::Gumbel gumbel_distribution(norm_activation, torch::ones_like(norm_activation));
-    // auto activation_phi = gumbel_distribution.rsample();
-
-    // auto activation_phi = norm_activation;
     
-
-    // cudaDeviceSynchronize();
-    // clock_t time_dequantize_end = clock();
-
-
-    // // double quantize2_time = (double)(time_quantize2_end - time_quantize2_start) / CLOCKS_PER_SEC;
-    // double leverage_time = (double)(time_leverage_end - time_quantize2_end) / CLOCKS_PER_SEC;
-    // double sample_time = (double)((time_sample_end - time_leverage_end)) / CLOCKS_PER_SEC;
-    // double pack_time = (double)(time_pack_end - time_sample_end) / CLOCKS_PER_SEC;
-    // double gemm1_time = (double)(time_gemm1_end - time_pack_end) / CLOCKS_PER_SEC;
-    // double gemm2_time = (double)(time_gemm2_end - time_gemm1_end) / CLOCKS_PER_SEC;
-    // double dequantize_time = (double)(time_dequantize_end - time_gemm2_end) / CLOCKS_PER_SEC;
-    // // time_leverage_end
-
-    // // time_vector.push_back(quantize2_time);
-    // time_vector.push_back(leverage_time);
-    // time_vector.push_back(sample_time);
-    // time_vector.push_back(pack_time);
-    // time_vector.push_back(gemm1_time);
-    // time_vector.push_back(gemm2_time);
-    // time_vector.push_back(dequantize_time);
-
-    return std::make_tuple(norm_activation, vec_norm, first_transform, second_transform, first_quantize, second_quantize, len_norm, small_num_, large_num_, scale1, zero_point1, scale2, zero_point2, nx, ny, nz);
-}
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> second_quantize_cuda(torch::Tensor vec_norm, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor first_quantize, torch::Tensor second_quantize, int len_norm, 
-                                                                                            int small_num_, int large_num_, float scale1, float zero_point1, float scale2, float zero_point2, int nx, int ny, int nz,
-                                                                                            torch::Tensor activation_phi_in, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation){
-    //TODO:to test use this way, later change into Gumble
-    dim3 block(N_THREADS);
-    auto activation_phi = activation_phi_in;
-
-    auto small_indices = std::get<1>(torch::topk(activation_phi.index({Slice({None, len_norm/2})}), small_num_));
-    auto large_indices = std::get<1>(torch::topk(activation_phi.index({Slice(len_norm/2)}), large_num_));
-    // auto indices = torch::cat({small_indices, large_indices + len_norm / 2});
-
     int cnt = 0;
     auto norm_activation_loop = vec_norm * len_norm / (2 * vec_norm.sum());
     bool whileloop = (norm_activation_loop.max() > 1).item<bool>();
@@ -543,7 +490,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> second_qu
         norm_activation_loop.index_put_({small_index}, small_value);
         whileloop = (norm_activation_loop.max() > 1).item<bool>();
     } 
-    // auto sample_index = torch::bernoulli(norm_activation_loop);
+    auto sample_index = torch::bernoulli(norm_activation_loop);
+    auto small_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) == 1).squeeze();
+    auto large_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) == 1).squeeze();
     // auto _index = torch::nonzero((sample_index == 1)).squeeze();
 
     norm_activation_loop.index_put_({norm_activation_loop == 0}, 1e-10);
@@ -569,7 +518,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> second_qu
     // clock_t time_sample_end = clock();
 
     // pack process
-    auto option_transform = torch::TensorOptions().dtype(torch::kInt8).device(vec_norm.device());
     auto sample_x1_int4 = torch::empty({nx, nz>>1}, option_transform);
     auto sample_x2_int4 = torch::empty({nx, nz>>1}, option_transform);
     auto sample_y_int4 = torch::empty({ny, nz>>1}, option_transform);
@@ -648,13 +596,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> second_qu
 
     auto Ind_small = torch::zeros_like(output_low);
     Ind_small.index_put_({small_indices,"..."}, 1);
-    auto Index1 = torch::nonzero(norm_small == 1e-10).squeeze();
-    Ind_small.index_put_({Index1,"..."}, 0);
+    // auto Index1 = torch::nonzero(norm_small == 1e-10).squeeze();
+    // Ind_small.index_put_({Index1,"..."}, 0);
     output_low = output_low.mul(Ind_small);
     auto Ind_large = torch::zeros_like(output_high);
     Ind_large.index_put_({large_indices,"..."}, 1);
-    auto Index2 = torch::nonzero(norm_large == 1e-10).squeeze();
-    Ind_large.index_put_({Index2,"..."}, 0);
+    // auto Index2 = torch::nonzero(norm_large == 1e-10).squeeze();
+    // Ind_large.index_put_({Index2,"..."}, 0);
     output_high = output_high.mul(Ind_large);
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "norm_cuda", ([&] {
@@ -679,5 +627,33 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> second_qu
                     -q_w + q_w.round())) * grad_output * grad_scale).sum().unsqueeze(0);
     auto grad_input = indicate_middle * grad_output;
 
-    return std::make_tuple(grad_input, grad_alpha, grad_output, gemm2);
+    // using namespace torch;
+    // torch::distributions::Gumbel gumbel_distribution(norm_activation, torch::ones_like(norm_activation));
+    // auto activation_phi = gumbel_distribution.rsample();
+
+    // auto activation_phi = norm_activation;
+    
+
+    // cudaDeviceSynchronize();
+    // clock_t time_dequantize_end = clock();
+
+
+    // // double quantize2_time = (double)(time_quantize2_end - time_quantize2_start) / CLOCKS_PER_SEC;
+    // double leverage_time = (double)(time_leverage_end - time_quantize2_end) / CLOCKS_PER_SEC;
+    // double sample_time = (double)((time_sample_end - time_leverage_end)) / CLOCKS_PER_SEC;
+    // double pack_time = (double)(time_pack_end - time_sample_end) / CLOCKS_PER_SEC;
+    // double gemm1_time = (double)(time_gemm1_end - time_pack_end) / CLOCKS_PER_SEC;
+    // double gemm2_time = (double)(time_gemm2_end - time_gemm1_end) / CLOCKS_PER_SEC;
+    // double dequantize_time = (double)(time_dequantize_end - time_gemm2_end) / CLOCKS_PER_SEC;
+    // // time_leverage_end
+
+    // // time_vector.push_back(quantize2_time);
+    // time_vector.push_back(leverage_time);
+    // time_vector.push_back(sample_time);
+    // time_vector.push_back(pack_time);
+    // time_vector.push_back(gemm1_time);
+    // time_vector.push_back(gemm2_time);
+    // time_vector.push_back(dequantize_time);
+
+    return std::make_tuple(grad_input, grad_alpha, output_low, output_high);
 }

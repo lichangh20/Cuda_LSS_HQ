@@ -18,29 +18,8 @@
 using namespace torch::indexing;
 
 template<typename scalar_t>
-__global__ void first_quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO_transform, scalar_t * __restrict__  MatO_quantize, scalar_t * __restrict__  MatO_x, const float scale, const float zero_point, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
-    if (x<size){
-        float input = MatI[x];
-
-        // scalar_t tmp1 = (input - zero_point) * scale - 8;
-        // int tmp2 = tmp1;
-        // int bias = (tmp1 - tmp2) * 2;
-        // int transform = std::clamp(tmp2+bias, -8, 7);
-
-        float tmp1 = round((input - zero_point) * scale - 8);
-        int transform = std::clamp((int)(tmp1) , -8, 7);
-
-        // int transform = std::clamp((int)(lround((input - zero_point) * scale - 8)), -8, 7);
-        MatO_transform[x] = transform;
-        float quantize = (transform + 8) / scale + zero_point;
-        MatO_quantize[x] = quantize;
-        MatO_x[x] = input - quantize;
-    }
-}
-
-template<typename scalar_t>
-__global__ void second_quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO_transform, scalar_t * __restrict__  MatO_quantize, const float scale, const float  zero_point, int size, unsigned long seed){
+__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, scalar_t * __restrict__  first_quantize, int8_t * second_transform, scalar_t * __restrict__  second_quantize, 
+                                    const int num_bins_half, const int num_bins_clamp, const float scale, int size, unsigned long seed){
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         // set random value
@@ -48,18 +27,42 @@ __global__ void second_quantize_cuda_kernel(const scalar_t * __restrict__  MatI,
         curand_init(seed, x, 0, &state);
         const float noise = curand_uniform(&state);
 
-        float input = MatI[x];
-        // scalar_t tmp1 = (input - zero_point) * scale + noise - 8.5;
+        float trans_input = MatI[x] * scale;
 
-        // // scalar_t tmp1 = (MatI[x] - zero_point) * scale - 8;
-        // int tmp2 = tmp1;
-        // int bias = (tmp1 - tmp2) * 2;
-        // MatO_transform[x] = std::clamp(tmp2+bias, -8, 7);
-        float tmp1 = round((input - zero_point) * scale + noise - 8.5);
-        MatO_transform[x] = std::clamp((int)(tmp1), -8, 7);
-        MatO_quantize[x] = (MatO_transform[x] + 8) / scale + zero_point;
+        float tmp1 = round(trans_input / num_bins_half);
+        int firstTransform = std::clamp((int)(tmp1), -num_bins_clamp, num_bins_clamp);
+        first_transform[x] = firstTransform;
+        // float quantize = (transform + 8) / scale + zero_point;
+        first_quantize[x] = firstTransform * num_bins_half / scale;
+
+        float tmp2 = round(trans_input - firstTransform * num_bins_half + noise - 0.5);
+        int secondTransform = std::clamp((int)(tmp2), -num_bins_clamp, num_bins_clamp);
+        second_transform[x] = secondTransform;
+        second_quantize[x] = secondTransform / scale;
     }
 }
+
+// template<typename scalar_t>
+// __global__ void second_quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO_transform, scalar_t * __restrict__  MatO_quantize, const float scale, const float  zero_point, int size, unsigned long seed){
+//     int x = threadIdx.x + blockIdx.x * blockDim.x;
+//     if (x<size){
+//         // set random value
+//         curandStatePhilox4_32_10_t state;
+//         curand_init(seed, x, 0, &state);
+//         const float noise = curand_uniform(&state);
+
+//         float input = MatI[x];
+//         // scalar_t tmp1 = (input - zero_point) * scale + noise - 8.5;
+
+//         // // scalar_t tmp1 = (MatI[x] - zero_point) * scale - 8;
+//         // int tmp2 = tmp1;
+//         // int bias = (tmp1 - tmp2) * 2;
+//         // MatO_transform[x] = std::clamp(tmp2+bias, -8, 7);
+//         float tmp1 = round((input - zero_point) * scale + noise - 8.5);
+//         MatO_transform[x] = std::clamp((int)(tmp1), -8, 7);
+//         MatO_quantize[x] = (MatO_transform[x] + 8) / scale + zero_point;
+//     }
+// }
 
 __global__ void pack_cuda_kernel(int8_t * in, int8_t * out, int size){
     int x = threadIdx.x + blockIdx.x * blockDim.x;
@@ -278,16 +281,15 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 template<typename scalar_t>
 __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2,
                                         scalar_t * __restrict__ output_low, scalar_t * __restrict__ output_high, 
-                                        const int64_t * sum_y_column, const float const_x1, const float const_x2,
-                                        const float scale_gemm1, const float scale_gemm2, int size, int ny){
+                                        const float scale_gemm1, const float scale_gemm2, int size){
     // extern __shared__ float s[];
     // float * y_col = s;  // N_THREADS float
     
     int x = threadIdx.x + blockIdx.x * blockDim.x;
-    int row = x / ny, col = x - row * ny;
+    // int row = x / ny, col = x - row * ny;
     // float norm1 = norm_small[row];
     // float norm2 = norm_large[row];
-    int64_t sumY = sum_y_column[col];
+    // int64_t sumY = sum_y_column[col];
 
     // y_col[threadIdx.x] = sum_y_column[col];
     // __syncthreads();
@@ -298,8 +300,8 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * ge
         // output_low[x] = tmp1;
         // float tmp2 = (gemm2[x] * scale_gemm2 + const_x2 * sumY) / norm2;
         // output_high[x] = tmp2;
-        output_low[x] = (gemm1[x] * scale_gemm1 + const_x1 * sumY);
-        output_high[x] = (gemm2[x] * scale_gemm2 + const_x2 * sumY);
+        output_low[x] = (gemm1[x] * scale_gemm1);
+        output_high[x] = (gemm2[x] * scale_gemm2);
     }
 }
 
@@ -361,7 +363,7 @@ __global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, scalar
   linalg[blockIdx.x] = sqrt(sum_val);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor x, int num_bins, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation){
     // std::vector<double> time_vector;
     int nx = x.size(0);
     int nz = x.size(1);
@@ -374,7 +376,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_
     auto option_quantize = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     torch::Tensor first_transform = torch::empty({nx, nz}, option_transform);
     torch::Tensor first_quantize = torch::empty({nx, nz}, option_quantize);
-    torch::Tensor first_x = torch::empty({nx, nz}, option_quantize);
+    torch::Tensor second_transform = torch::empty({nx, nz}, option_transform);
+    torch::Tensor second_quantize = torch::empty({nx, nz}, option_quantize);
     
     dim3 block(N_THREADS);
     dim3 grid1((nx*nz-1)/block.x+1);
@@ -383,58 +386,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_
     float mn = std::min(x.min().item<float>() - 1e-8, 0.);
     float mx = std::max(x.max().item<float>() + 1e-8, 0.);
 
-    float zero_point1 = mn;
-    float scale1 = num_bins / (mx - mn);
+    int num_bins_half = pow(2, num_bits) - 2;
+    int num_bins = num_bins_half * num_bins_half;
+    int num_bins_clamp = num_bins_half / 2 - 1;
 
-    float iqzero = floor(-zero_point1 * scale1);
+    float scale1 = num_bins / (2 * max(fabs(mn), fabs(mx)));
 
-    if (fabs(iqzero) < 1e-10){
-        zero_point1 = 0;
-        mn = 0;
-    } else if (iqzero > 0){
-        mx = (iqzero - num_bins) * mn / iqzero;
-    }
-    scale1 = num_bins / (mx - mn);
-
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(x.scalar_type(), "first_quantize_cuda", ([&] {
-    first_quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(x.scalar_type(), "quantize_cuda", ([&] {
+    quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
         x.data_ptr<scalar_t>(),
         first_transform.data_ptr<int8_t>(),
         first_quantize.data_ptr<scalar_t>(),
-        first_x.data_ptr<scalar_t>(),
-        scale1, zero_point1,
-        size_quantize);
-    }));
-
-    // cudaDeviceSynchronize();
-    // clock_t time_quantize1_end = clock();
-
-    torch::Tensor second_transform = torch::empty({nx, nz}, option_transform);
-    torch::Tensor second_quantize = torch::empty({nx, nz}, option_quantize);
-
-    mn = std::min(first_x.min().item<float>() - 1e-8, 0.);
-    mx = std::max(first_x.max().item<float>() + 1e-8, 0.);
-
-    float zero_point2 = mn;
-    float scale2 = num_bins / (mx - mn);
-
-    iqzero = floor(-zero_point2 * scale2);
-
-    if (fabs(iqzero) < 1e-10){
-        zero_point2 = 0;
-        mn = 0;
-    } else if (iqzero > 0){
-        mx = (iqzero - num_bins) * mn / iqzero;
-    }
-    scale2 = num_bins / (mx - mn);
-
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(x.scalar_type(), "second_quantize_cuda", ([&] {
-    second_quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
-        first_x.data_ptr<scalar_t>(),
         second_transform.data_ptr<int8_t>(),
         second_quantize.data_ptr<scalar_t>(),
-        scale2, zero_point2, 
-        size_quantize,rand());
+        num_bins_half, num_bins_clamp,
+        scale1, size_quantize,rand());
     }));
 
     // cudaDeviceSynchronize();
@@ -557,15 +523,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_
     dim3 grid2((nx*ny-1)/block.x+1);
     // First dequantize higher 4 bits
     auto option_output = torch::TensorOptions().dtype(torch::kFloat16).device(gemm1.device());
-    auto sum_y_column = torch::sum(qy, 0);
+    // auto sum_y_column = torch::sum(qy, 0);
     auto output_low = torch::empty({nx,ny}, option_output);
     auto output_high = torch::empty({nx,ny}, option_output);
     auto grad_output = torch::empty({nx,ny}, option_output);
 
-    float const_x1 = (8.0 / scale1 + zero_point1) * scaley;
-    float const_x2 = (8.0 / scale2 + zero_point2) * scaley;
-    float scale_gemm1 = scaley / (scale1);
-    float scale_gemm2 = scaley / (scale2);
+    // float const_x1 = (8.0 / scale1 + zero_point1) * scaley;
+    // float const_x2 = (8.0 / scale2 + zero_point2) * scaley;
+    float scale_gemm1 = scaley * num_bins_half / (scale1);
+    float scale_gemm2 = scaley / (scale1);
     auto norm_small = norm_activation_loop.index({Slice({None, len_norm/2})});
     auto norm_large = norm_activation_loop.index({Slice(len_norm/2)});
     int size = nx*ny;
@@ -589,9 +555,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> quantize_
         // norm_large.data_ptr<float>(),
         output_low.data_ptr<scalar_t>(),
         output_high.data_ptr<scalar_t>(),
-        sum_y_column.data_ptr<int64_t>(),
-        const_x1, const_x2, scale_gemm1, scale_gemm2,
-        size, ny);
+        // sum_y_column.data_ptr<int64_t>(),
+        // const_x1, const_x2, 
+        scale_gemm1, scale_gemm2,
+        size);
     }));
 
     auto Ind_small = torch::zeros_like(output_low);

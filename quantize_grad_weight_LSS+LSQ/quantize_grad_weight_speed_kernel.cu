@@ -74,6 +74,15 @@ __global__ void pack_cuda_kernel(int8_t * in, int8_t * out, int size){
     }
 }
 
+template<typename scalar_t>
+__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, int size){
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (x<size){
+        out[x] = in[x] * scale;
+    }
+}
+
 cudaError_t CutlassSgemmNN_fp16(
   const int M,
   const int N,
@@ -485,8 +494,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
 
     int cnt = 0;
     int flag = 0;
-    auto norm_weight_loop = vec_norm * len_norm / (2 * vec_norm.sum());
+    // auto norm_weight_loop = vec_norm * len_norm / (2 * vec_norm.sum());
+    auto norm_weight_loop = torch::empty_like(vec_norm);
+    float scale_norm = len_norm / (2 * vec_norm.sum().item<float>());
+    dim3 grid_norm(len_norm/block.x+1);
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(vec_norm.scalar_type(), "multiple_cuda", ([&] {
+    multiple_kernel<scalar_t><<<grid_norm, block>>>(
+        vec_norm.data_ptr<scalar_t>(),
+        norm_weight_loop.data_ptr<scalar_t>(),
+        scale_norm,len_norm);
+    }));
     int posNum = (norm_weight_loop > 0).sum().item<int>();
+    auto sample_index = norm_weight_loop;
     if (posNum < len_norm / 2){
         cnt = posNum;
         norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
@@ -498,24 +517,34 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
                 flag = 1;
                 break;
             }
-            auto small_index = torch::nonzero((norm_weight_loop < 1)).squeeze();
+            auto small_index = (norm_weight_loop < 1);
             auto small_value = norm_weight_loop.index({small_index});
-            cnt = len_norm - small_index.numel();
+            int small_len = small_value.numel();
+            cnt = len_norm - small_len;
             norm_weight_loop = torch::clamp(norm_weight_loop, 0, 1);
             bool breakloop = (small_value.max() == 0).item<bool>();
             if (breakloop) {
                 flag = 2;
                 break;
             }
-            small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
+            // small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
+            float scale_small = (len_norm / 2 - cnt) / small_value.sum().item<float>();
+            dim3 grid_small(small_len/block.x+1);
+            AT_DISPATCH_FLOATING_TYPES_AND_HALF(small_value.scalar_type(), "multiple_cuda", ([&] {
+            multiple_kernel<scalar_t><<<grid_small, block>>>(
+                small_value.data_ptr<scalar_t>(),
+                small_value.data_ptr<scalar_t>(),
+                scale_small,small_len);
+            }));
             // norm_weight_loop[small_index] = small_value;
             norm_weight_loop.index_put_({small_index}, small_value);
             whileloop = (norm_weight_loop.max() > 1).item<bool>();
         } 
+        sample_index = torch::bernoulli(norm_weight_loop);
     }
     cudaDeviceSynchronize();
     clock_t time_sample1_end = clock();
-    auto sample_index = torch::bernoulli(norm_weight_loop);
+    // auto sample_index = torch::bernoulli(norm_weight_loop);
     auto small_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) == 1).squeeze(1);
     auto large_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) == 1).squeeze(1);
 
@@ -525,19 +554,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     int size = nx*ny;
 
     if (flag == 1){
-        auto small_num = (norm_weight_loop.index({small_indices}) == 1).sum();
+        auto norm_small_indices = (norm_weight_loop.index({small_indices}) == 1);
+        auto small_num = norm_small_indices.sum();
         // TODO: test if .int() can work in libtorch
         small_num = ((small_num / 32).floor() * 32).to(torch::kInt32);
         int small_num_ = small_num.item<int>();
-        auto small_int_indices = small_indices.index({torch::nonzero(norm_weight_loop.index({small_indices}) == 1).squeeze(1)}).index({Slice({None, small_num_})});
+        auto small_int_indices = small_indices.index({norm_small_indices}).index({Slice({None, small_num_})});
         auto small_left_indices = small_indices.index({~torch::isin(small_indices, small_int_indices)});
         // cudaDeviceSynchronize();
         // clock_t time_sample2_end = clock();
-        auto large_num = (norm_weight_loop.index({large_indices + len_norm / 2}) == 1).sum();
+        auto norm_large_indices = (norm_weight_loop.index({large_indices + len_norm / 2}) == 1);
+        auto large_num = norm_large_indices.sum();
         // TODO: test if .int() can work in libtorch
         large_num = ((large_num / 32).floor() * 32).to(torch::kInt32);
         int large_num_ = large_num.item<int>();
-        auto large_int_indices = large_indices.index({torch::nonzero(norm_weight_loop.index({large_indices + len_norm / 2}) == 1).squeeze(1)}).index({Slice({None, large_num_})});
+        auto large_int_indices = large_indices.index({norm_large_indices}).index({Slice({None, large_num_})});
         auto large_left_indices = large_indices.index({~torch::isin(large_indices, large_int_indices)});
         // auto _index = torch::nonzero((sample_index == 1)).squeeze();
 

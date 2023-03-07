@@ -149,8 +149,8 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm, scalar_t * __restri
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
-    // std::vector<double> time_vector;
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
+    std::vector<double> time_vector;
     cudaError_t result;
     //TODO: remember that input y is transposed
     int nx = hx.size(0);
@@ -161,8 +161,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Ten
     auto option_quantize = torch::TensorOptions().dtype(torch::kInt8).device(hx.device());
     dim3 block(N_THREADS);
 
-    // cudaDeviceSynchronize();
-    // clock_t time_quantize1_start = clock();
+    cudaDeviceSynchronize();
+    clock_t time_quantize_start = clock();
 
     dim3 grid1((nx*nz-1)/(block.x)+1);
     torch::Tensor q_x = torch::empty({nx,nz}, option_quantize);
@@ -188,8 +188,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Ten
         scale_y,hy_size);
     }));
 
-    // cudaDeviceSynchronize();
-    // clock_t time_quantize2_end = clock();
+    cudaDeviceSynchronize();
+    clock_t time_quantize_end = clock();
 
     //TODO: then pack int8 data into int4 data
     dim3 grid_pack_x((nx*nz/2-1)/block.x+1);
@@ -204,8 +204,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Ten
     //Todo:weight needs to be transposed, thus transpose is no longer needed
     pack_cuda_kernel<<<grid_pack_y,block>>>(q_y.data_ptr<int8_t>(), pack_qy.data_ptr<int8_t>(), qy_size);
 
-    // cudaDeviceSynchronize();
-    // clock_t time_pack_end = clock();
+    cudaDeviceSynchronize();
+    clock_t time_pack_end = clock();
 
     //TODO: then int4 gemm
     int lda = nz;
@@ -216,8 +216,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Ten
     result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(pack_qx.data_ptr<int8_t>()), lda, 
             reinterpret_cast<cutlass::int4b_t *>(pack_qy.data_ptr<int8_t>()), ldb, gemm.data_ptr<int32_t>(), ldc);
         
-    // cudaDeviceSynchronize();
-    // clock_t time_gemm_end = clock();
+    cudaDeviceSynchronize();
+    clock_t time_gemm_end = clock();
 
     //TODO:Final dequantize
     dim3 grid3((nx*ny-1)/block.x+1);
@@ -232,21 +232,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_cuda(torch::Ten
         scale,size);
     }));
 
-    // cudaDeviceSynchronize();
-    // clock_t time_dequantize_end = clock();
+    cudaDeviceSynchronize();
+    clock_t time_dequantize_end = clock();
 
     // double quantize1_time = (double)(time_quantize1_end - time_quantize1_start) / CLOCKS_PER_SEC;
-    // double quantize2_time = (double)(time_quantize2_end - time_quantize1_end) / CLOCKS_PER_SEC;
-    // double pack_time = (double)(time_pack_end - time_quantize2_end) / CLOCKS_PER_SEC;
-    // double gemm_time = (double)(time_gemm_end - time_pack_end) / CLOCKS_PER_SEC;
-    // double dequantize_time = (double)(time_dequantize_end - time_gemm_end) / CLOCKS_PER_SEC;
+    double quantize_time = (double)(time_quantize_end - time_quantize_start) / CLOCKS_PER_SEC;
+    double pack_time = (double)(time_pack_end - time_quantize_end) / CLOCKS_PER_SEC;
+    double gemm_time = (double)(time_gemm_end - time_pack_end) / CLOCKS_PER_SEC;
+    double dequantize_time = (double)(time_dequantize_end - time_gemm_end) / CLOCKS_PER_SEC;
 
     // time_vector.push_back(quantize1_time);
-    // time_vector.push_back(quantize2_time);
-    // time_vector.push_back(pack_time);
-    // time_vector.push_back(gemm_time);
-    // time_vector.push_back(dequantize_time);
+    time_vector.push_back(quantize_time);
+    time_vector.push_back(pack_time);
+    time_vector.push_back(gemm_time);
+    time_vector.push_back(dequantize_time);
  
     // return output;
-    return std::make_tuple(output, q_x, q_y);
+    return std::make_tuple(output, q_x, q_y, time_vector);
 }

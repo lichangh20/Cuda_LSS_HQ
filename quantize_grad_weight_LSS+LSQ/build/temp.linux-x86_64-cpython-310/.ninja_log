@@ -1,0 +1,9 @@
+# ninja log v5
+0	15452	1677579790625406330	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed.o	6a5984ddcc63e08c
+0	69923	1677579845096842692	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+9	67742	1677653993325415637	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+9	72091	1677669648125067563	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+9	71553	1677685814735338006	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+9	72619	1677808521374149502	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+8	64928	1678010474170216639	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6
+8	62374	1678015901491101976	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_weight_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_weight_speed_kernel.o	a8127635e62cddd6

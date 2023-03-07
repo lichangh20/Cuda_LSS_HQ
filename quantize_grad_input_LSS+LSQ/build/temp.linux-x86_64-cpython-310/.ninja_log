@@ -13,3 +13,5 @@
 9	64361	1678013987810537588	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_input_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_input_speed_kernel.o	a43c984135634c7b
 10	68964	1678085363735173774	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_input_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_input_speed_kernel.o	a43c984135634c7b
 8	64459	1678085774190931230	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_input_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_input_speed_kernel.o	a43c984135634c7b
+9	69412	1678192043087253211	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_input_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_input_speed_kernel.o	a43c984135634c7b
+9	67580	1678196327687450773	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_grad_input_LSS+LSQ/build/temp.linux-x86_64-cpython-310/quantize_grad_input_speed_kernel.o	a43c984135634c7b

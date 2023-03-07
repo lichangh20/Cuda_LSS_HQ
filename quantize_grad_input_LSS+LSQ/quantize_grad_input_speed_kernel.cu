@@ -18,7 +18,7 @@
 using namespace torch::indexing;
 
 template<typename scalar_t>
-__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, scalar_t * __restrict__  first_quantize, int8_t * second_transform, scalar_t * __restrict__  second_quantize, 
+__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, int8_t * second_transform, 
                                     const int num_bins_half, const int num_bins_clamp, const float scale, int size, unsigned long seed){
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
@@ -33,12 +33,12 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
         int firstTransform = std::clamp((int)(tmp1), -num_bins_clamp, num_bins_clamp);
         first_transform[x] = firstTransform;
         // float quantize = (transform + 8) / scale + zero_point;
-        first_quantize[x] = firstTransform * num_bins_half / scale;
+        // first_quantize[x] = firstTransform * num_bins_half / scale;
 
         float tmp2 = round(trans_input - firstTransform * num_bins_half + noise - 0.5);
         int secondTransform = std::clamp((int)(tmp2), -num_bins_clamp, num_bins_clamp);
         second_transform[x] = secondTransform;
-        second_quantize[x] = secondTransform / scale;
+        // second_quantize[x] = secondTransform / scale;
     }
 }
 
@@ -320,6 +320,15 @@ __global__ void norm_cuda_kernel(const float * norm_small, const float * norm_la
     }
 }
 
+template<typename scalar_t>
+__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, int size){
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (x<size){
+        out[x] = in[x] * scale;
+    }
+}
+
 // template<typename scalar_t>
 // __global__ void dequantize_cuda_kernel_fp16(const scalar_t * __restrict__ gemm1, const scalar_t * __restrict__ gemm2, scalar_t * __restrict__ output, 
 //                                         int size){  
@@ -379,6 +388,31 @@ __global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, float 
   linalg[blockIdx.x] = sqrt(sum_val);
 }
 
+__global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, int N, int D, int stride_D, float scale){
+  float sum_val = 0;
+
+  for (int64_t k1_outer = 0; k1_outer < stride_D; ++k1_outer) {
+    int64_t temp = in[blockIdx.x * D + (k1_outer << 5) + threadIdx.x];
+    sum_val += temp * temp;
+  }
+
+  unsigned int mask;
+  float sum_val_t;
+  mask = __activemask();
+
+  sum_val_t = __shfl_down_sync(mask, sum_val, 16, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 8, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 4, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 2, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 1, 32);
+  sum_val += sum_val_t;
+  linalg[blockIdx.x] = sqrt(sum_val) * scale;
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation){
     std::vector<double> time_vector;
     int nx = x.size(0);
@@ -392,9 +426,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     auto option_quantize = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     auto option_float = torch::TensorOptions().dtype(torch::kFloat32).device(x.device());
     torch::Tensor first_transform = torch::empty({nx, nz}, option_transform);
-    torch::Tensor first_quantize = torch::empty({nx, nz}, option_quantize);
+    // torch::Tensor first_quantize = torch::empty({nx, nz}, option_quantize);
     torch::Tensor second_transform = torch::empty({nx, nz}, option_transform);
-    torch::Tensor second_quantize = torch::empty({nx, nz}, option_quantize);
+    // torch::Tensor second_quantize = torch::empty({nx, nz}, option_quantize);
     
     dim3 block(N_THREADS);
     dim3 grid1((nx*nz-1)/block.x+1);
@@ -413,9 +447,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
         x.data_ptr<scalar_t>(),
         first_transform.data_ptr<int8_t>(),
-        first_quantize.data_ptr<scalar_t>(),
+        // first_quantize.data_ptr<scalar_t>(),
         second_transform.data_ptr<int8_t>(),
-        second_quantize.data_ptr<scalar_t>(),
+        // second_quantize.data_ptr<scalar_t>(),
         num_bins_half, num_bins_clamp,
         scale1, size_quantize,rand());
     }));
@@ -435,18 +469,31 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // auto I_len = torch::empty({nx,}, option_quantize);
 
     int stride_x = nz / 32;
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(first_quantize.scalar_type(), "linalg_cuda", ([&] {
-    linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        first_quantize.data_ptr<scalar_t>(), 
+    float scale_x1 = num_bins_half / scale1;
+    float scale_x2 = 1. / scale1;
+
+    linalg_normInt_cuda_kernel<<<blocks, threads>>>(
+        first_transform.data_ptr<int8_t>(), 
         x1_len.data_ptr<float>(),
-        nx,nz,stride_x);
-    }));
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(second_quantize.scalar_type(), "linalg_cuda", ([&] {
-    linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        second_quantize.data_ptr<scalar_t>(), 
+        nx,nz,stride_x, scale_x1);
+
+    linalg_normInt_cuda_kernel<<<blocks, threads>>>(
+        second_transform.data_ptr<int8_t>(), 
         x2_len.data_ptr<float>(),
-        nx,nz,stride_x);
-    }));
+        nx,nz,stride_x, scale_x2);
+
+    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(first_quantize.scalar_type(), "linalg_cuda", ([&] {
+    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
+    //     first_quantize.data_ptr<scalar_t>(), 
+    //     x1_len.data_ptr<float>(),
+    //     nx,nz,stride_x);
+    // }));
+    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(second_quantize.scalar_type(), "linalg_cuda", ([&] {
+    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
+    //     second_quantize.data_ptr<scalar_t>(), 
+    //     x2_len.data_ptr<float>(),
+    //     nx,nz,stride_x);
+    // }));
     // int stride_I = nx / 32;
     // AT_DISPATCH_FLOATING_TYPES_AND_HALF(I.scalar_type(), "linalg_cuda", ([&] {
     // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
@@ -462,7 +509,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     
     int cnt = 0;
     int whilenum = 0;
-    auto norm_activation_loop = vec_norm * len_norm / (2 * vec_norm.sum());
+    // auto norm_activation_loop = vec_norm * len_norm / (2 * vec_norm.sum());
+    auto norm_activation_loop = torch::empty_like(vec_norm);
+    float scale_norm = len_norm / (2 * vec_norm.sum().item<float>());
+    dim3 grid_norm(len_norm/block.x+1);
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(vec_norm.scalar_type(), "multiple_cuda", ([&] {
+    multiple_kernel<scalar_t><<<grid_norm, block>>>(
+        vec_norm.data_ptr<scalar_t>(),
+        norm_activation_loop.data_ptr<scalar_t>(),
+        scale_norm,len_norm);
+    }));
+    auto sample_index = norm_activation_loop;
     // cudaDeviceSynchronize();
     // clock_t time_sample1_end = clock();
     if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
@@ -470,34 +527,35 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     } else {
         bool whileloop = (norm_activation_loop.max() > 1).item<bool>();
         while (whileloop && cnt < len_norm / 2){
-            auto small_index = torch::nonzero((norm_activation_loop < 1)).squeeze();
+            auto small_index = (norm_activation_loop < 1);
             auto small_value = norm_activation_loop.index({small_index});
-            cnt = len_norm - small_index.numel();
+            int small_len = small_value.numel();
+            cnt = len_norm - small_len;
             norm_activation_loop = torch::clamp(norm_activation_loop, 0, 1);
             bool breakloop = (small_value.max() == 0).item<bool>();
             if (breakloop)
                 break;
-            small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
+            // small_value = small_value * (len_norm / 2 - cnt) / small_value.sum();
+            float scale_small = (len_norm / 2 - cnt) / small_value.sum().item<float>();
+            dim3 grid_small(small_len/block.x+1);
+            AT_DISPATCH_FLOATING_TYPES_AND_HALF(small_value.scalar_type(), "multiple_cuda", ([&] {
+            multiple_kernel<scalar_t><<<grid_small, block>>>(
+                small_value.data_ptr<scalar_t>(),
+                small_value.data_ptr<scalar_t>(),
+                scale_small,small_len);
+            }));
             // norm_activation_loop[small_index] = small_value;
             norm_activation_loop.index_put_({small_index}, small_value);
             whileloop = (norm_activation_loop.max() > 1).item<bool>();
             whilenum++;
         } 
+        sample_index = torch::bernoulli(norm_activation_loop);
     }
-    // cudaDeviceSynchronize();
-    // clock_t time_sample2_end = clock();
-    auto sample_index = torch::bernoulli(norm_activation_loop);
-    // cudaDeviceSynchronize();
-    // clock_t time_sample3_end = clock();
     // auto small_indices = torch::where(sample_index.index({Slice({None, len_norm/2})}) == 1)[0];
-    auto small_left_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) != 1).squeeze();
-    // cudaDeviceSynchronize();
-    // clock_t time_sample4_end = clock();
+    // auto small_left_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) != 1).squeeze();
     // auto large_indices = torch::where(sample_index.index({Slice(len_norm/2)}) == 1)[0];
-    auto large_left_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) != 1).squeeze();
-    // cudaDeviceSynchronize();
-    // clock_t time_sample5_end = clock();
-    // auto _index = torch::nonzero((sample_index == 1)).squeeze();
+    // auto large_left_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) != 1).squeeze();
+    auto left_indices = (sample_index != 1);
 
     norm_activation_loop.index_put_({norm_activation_loop == 0}, 1);
     // cudaDeviceSynchronize();
@@ -601,8 +659,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     cudaDeviceSynchronize();
     clock_t time_dequantize1_end = clock();
 
-    output_low.index_fill_(0, small_left_indices, 0);
-    output_high.index_fill_(0, large_left_indices, 0);
+    // output_low.index_fill_(0, small_left_indices, 0);
+    // output_high.index_fill_(0, large_left_indices, 0);
+    output_low.index_put_({left_indices.index({Slice({None, len_norm/2})}),"..."}, 0);
+    output_high.index_put_({left_indices.index({Slice(len_norm/2)}),"..."}, 0);
     cudaDeviceSynchronize();
     clock_t time_dequantize2_end = clock();
     auto grad_output = torch::empty({nx,ny}, option_output);

@@ -22,7 +22,7 @@
 using namespace torch::indexing;
 
 template<typename scalar_t>
-__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, scalar_t * __restrict__  first_quantize, int8_t * second_transform, scalar_t * __restrict__  second_quantize, 
+__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, int8_t * second_transform, 
                                     const int num_bins_half, const int num_bins_clamp, const float scale, int size, unsigned long seed){
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
@@ -37,12 +37,12 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
         int firstTransform = std::clamp((int)(tmp1), -num_bins_clamp, num_bins_clamp);
         first_transform[x] = firstTransform;
         // float quantize = (transform + 8) / scale + zero_point;
-        first_quantize[x] = firstTransform * num_bins_half / scale;
+        // first_quantize[x] = firstTransform * num_bins_half / scale;
 
         float tmp2 = round(trans_input - firstTransform * num_bins_half + noise - 0.5);
         int secondTransform = std::clamp((int)(tmp2), -num_bins_clamp, num_bins_clamp);
         second_transform[x] = secondTransform;
-        second_quantize[x] = secondTransform / scale;
+        // second_quantize[x] = secondTransform / scale;
     }
 }
 
@@ -363,6 +363,31 @@ __global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, float 
   linalg[blockIdx.x] = sqrt(sum_val);
 }
 
+__global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, int N, int D, int stride_D, float scale){
+  float sum_val = 0;
+
+  for (int64_t k1_outer = 0; k1_outer < stride_D; ++k1_outer) {
+    int64_t temp = in[blockIdx.x * D + (k1_outer << 5) + threadIdx.x];
+    sum_val += temp * temp;
+  }
+
+  unsigned int mask;
+  float sum_val_t;
+  mask = __activemask();
+
+  sum_val_t = __shfl_down_sync(mask, sum_val, 16, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 8, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 4, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 2, 32);
+  sum_val += sum_val_t;
+  sum_val_t = __shfl_down_sync(mask, sum_val, 1, 32);
+  sum_val += sum_val_t;
+  linalg[blockIdx.x] = sqrt(sum_val) * scale;
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor y, torch::Tensor qy, float scaley, torch::Tensor hadamard_weight, torch::Tensor scale_weight){
     std::vector<double> time_vector;
     int nz = x.size(0);
@@ -376,9 +401,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     auto option_quantize = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     auto option_float = torch::TensorOptions().dtype(torch::kFloat32).device(x.device());
     torch::Tensor first_transform = torch::empty({nz, nx}, option_transform);
-    torch::Tensor first_quantize = torch::empty({nz, nx}, option_quantize);
+    // torch::Tensor first_quantize = torch::empty({nz, nx}, option_quantize);
     torch::Tensor second_transform = torch::empty({nz, nx}, option_transform);
-    torch::Tensor second_quantize = torch::empty({nz, nx}, option_quantize);
+    // torch::Tensor second_quantize = torch::empty({nz, nx}, option_quantize);
 
     dim3 block(N_THREADS);
     dim3 grid1((nx*nz-1)/block.x+1);
@@ -397,9 +422,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
         x.data_ptr<scalar_t>(),
         first_transform.data_ptr<int8_t>(),
-        first_quantize.data_ptr<scalar_t>(),
+        // first_quantize.data_ptr<scalar_t>(),
         second_transform.data_ptr<int8_t>(),
-        second_quantize.data_ptr<scalar_t>(),
+        // second_quantize.data_ptr<scalar_t>(),
         num_bins_half, num_bins_clamp,
         scale1, size_quantize,rand());
     }));
@@ -417,18 +442,31 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     auto y_len = torch::empty({nz,}, option_float);
 
     int stride_x = nx / 32;
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(first_quantize.scalar_type(), "linalg_cuda", ([&] {
-    linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        first_quantize.data_ptr<scalar_t>(), 
+    float scale_x1 = num_bins_half / scale1;
+    float scale_x2 = 1. / scale1;
+    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(first_quantize.scalar_type(), "linalg_cuda", ([&] {
+    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
+    //     first_quantize.data_ptr<scalar_t>(), 
+    //     x1_len.data_ptr<float>(),
+    //     nz,nx,stride_x);
+    // }));
+    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(second_quantize.scalar_type(), "linalg_cuda", ([&] {
+    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
+    //     second_quantize.data_ptr<scalar_t>(), 
+    //     x2_len.data_ptr<float>(),
+    //     nz,nx,stride_x);
+    // }));
+
+    linalg_normInt_cuda_kernel<<<blocks, threads>>>(
+        first_transform.data_ptr<int8_t>(), 
         x1_len.data_ptr<float>(),
-        nz,nx,stride_x);
-    }));
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(second_quantize.scalar_type(), "linalg_cuda", ([&] {
-    linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        second_quantize.data_ptr<scalar_t>(), 
+        nz,nx,stride_x, scale_x1);
+
+    linalg_normInt_cuda_kernel<<<blocks, threads>>>(
+        second_transform.data_ptr<int8_t>(), 
         x2_len.data_ptr<float>(),
-        nz,nx,stride_x);
-    }));
+        nz,nx,stride_x, scale_x2);
+
     int stride_y = ny / 32;
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(y.scalar_type(), "linalg_cuda", ([&] {
     linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
@@ -523,10 +561,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
         auto sample_x2 = second_transform.index({large_int_indices}).t().contiguous();
         auto sample_y1 = qy.index({small_int_indices}).t().contiguous();
         auto sample_y2 = qy.index({large_int_indices}).t().contiguous();
-        cudaDeviceSynchronize();
-        clock_t time_sample4_end = clock();
-        auto sample_x3 = (first_quantize.index({small_left_indices}).t() / norm_weight_loop.index({small_left_indices})).to(torch::kFloat16);
-        auto sample_x4 = (second_quantize.index({large_left_indices}).t() / norm_weight_loop.index({large_left_indices + len_norm / 2})).to(torch::kFloat16);
+        // cudaDeviceSynchronize();
+        // clock_t time_sample4_end = clock();
+        auto sample_x3 = (first_transform.index({small_left_indices}).t() * num_bins_half / (scale1 * norm_weight_loop.index({small_left_indices}))).to(torch::kFloat16);
+        auto sample_x4 = (second_transform.index({large_left_indices}).t() / (scale1 * norm_weight_loop.index({large_left_indices + len_norm / 2}))).to(torch::kFloat16);
         //todo:currently multiply a scaley to convert it into fp16
         auto sample_y3 = (qy.index({small_left_indices}) * scaley).to(torch::kFloat16);
         auto sample_y4 = (qy.index({large_left_indices}) * scaley).to(torch::kFloat16);

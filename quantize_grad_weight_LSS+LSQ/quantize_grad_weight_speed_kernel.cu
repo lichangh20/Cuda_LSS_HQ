@@ -345,6 +345,58 @@ __device__ __inline__ c10::Half __shfl_down_sync(const unsigned mask, const c10:
   return __shfl_down_sync(mask, var_, delta, width);
 }
 
+__device__ __inline__ c10::Half __shfl_sync(const unsigned mask, const c10::Half var,
+                                            const int delta, const int width) {
+  __half var_ = var;
+  return __shfl_sync(mask, var_, delta, width);
+}
+
+template <typename scalar_t>
+__global__ void minimax_cuda_kernel(const scalar_t* __restrict__ data,
+                                    scalar_t* __restrict__ min,
+                                    scalar_t* __restrict__ max,
+                                    int64_t N,
+                                    int64_t D) {
+  scalar_t max_val, min_val;
+  max_val = -1e30;
+  min_val = 1e30;
+
+  for (int64_t k1_outer = 0; k1_outer < D / 32; ++k1_outer) {
+    max_val = std::max(max_val, data[blockIdx.x * D + k1_outer * 32 + threadIdx.x]);
+    min_val = std::min(min_val, data[blockIdx.x * D + k1_outer * 32 + threadIdx.x]);
+  }
+
+  unsigned int mask;
+  scalar_t max_val_t, min_val_t;
+  mask = __activemask();
+
+  max_val_t = __shfl_down_sync(mask, max_val, 16, 32);
+  max_val = std::max(max_val, max_val_t);
+  max_val_t = __shfl_down_sync(mask, max_val, 8, 32);
+  max_val = std::max(max_val, max_val_t);
+  max_val_t = __shfl_down_sync(mask, max_val, 4, 32);
+  max_val = std::max(max_val, max_val_t);
+  max_val_t = __shfl_down_sync(mask, max_val, 2, 32);
+  max_val = std::max(max_val, max_val_t);
+  max_val_t = __shfl_down_sync(mask, max_val, 1, 32);
+  max_val = std::max(max_val, max_val_t);
+  max_val = __shfl_sync(mask, max_val, 0, 32);
+  max[blockIdx.x] = max_val;
+
+  min_val_t = __shfl_down_sync(mask, min_val, 16, 32);
+  min_val = std::min(min_val, min_val_t);
+  min_val_t = __shfl_down_sync(mask, min_val, 8, 32);
+  min_val = std::min(min_val, min_val_t);
+  min_val_t = __shfl_down_sync(mask, min_val, 4, 32);
+  min_val = std::min(min_val, min_val_t);
+  min_val_t = __shfl_down_sync(mask, min_val, 2, 32);
+  min_val = std::min(min_val, min_val_t);
+  min_val_t = __shfl_down_sync(mask, min_val, 1, 32);
+  min_val = std::min(min_val, min_val_t);
+  min_val = __shfl_sync(mask, min_val, 0, 32);
+  min[blockIdx.x] = min_val;
+}
+
 //TODO: N means rows, D means cols
 template<typename scalar_t>
 __global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, float * linalg, int N, int D, int stride_D){
@@ -397,7 +449,7 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor y, torch::Tensor qy, float scaley, torch::Tensor hadamard_weight, torch::Tensor scale_weight){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, float> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor y, torch::Tensor qy, float scaley, torch::Tensor hadamard_weight, torch::Tensor scale_weight){
     std::vector<double> time_vector;
     int nz = x.size(0);
     int nx = x.size(1);
@@ -418,8 +470,20 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     dim3 grid1((nx*nz-1)/block.x+1);
     int size_quantize = nz * nx ;
     // process of first quantize
-    float mn = std::min(x.min().item<float>() - 1e-8, 0.);
-    float mx = std::max(x.max().item<float>() + 1e-8, 0.);
+    torch::Tensor min_x = torch::empty({nz, }, option_quantize);
+    torch::Tensor max_x = torch::empty({nz, }, option_quantize);
+    int minimax_blocks = nz;
+    int minimax_threads = 32;
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(x.scalar_type(), "minimax_cuda", ([&] {
+    minimax_cuda_kernel<scalar_t><<<minimax_blocks, minimax_threads>>>(
+      x.data_ptr<scalar_t>(), min_x.data_ptr<scalar_t>(), max_x.data_ptr<scalar_t>(),
+      nz, nx);
+    }));
+    // float mn = std::min(x.min().item<float>() - 1e-8, 0.);
+    // float mx = std::max(x.max().item<float>() + 1e-8, 0.);
+    float mn = std::min(min_x.min().item<float>() - 1e-8, 0.);
+    float mx = std::max(max_x.max().item<float>() + 1e-8, 0.);
 
     int num_bins_half = pow(2, num_bits) - 2;
     int num_bins = num_bins_half * num_bins_half;
@@ -504,9 +568,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
         norm_weight_loop.data_ptr<scalar_t>(),
         scale_norm,len_norm);
     }));
-    int posNum = (norm_weight_loop > 0).sum().item<int>();
     auto sample_index = norm_weight_loop;
-    if (posNum < len_norm / 2){
+    int posNum = (norm_weight_loop > 0).sum().item<int>();
+    // if (posNum < len_norm / 2){
+    if (true) {
         cnt = posNum;
         norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
         flag = 2;
@@ -922,6 +987,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     time_vector.push_back(LSQ_time);
     // auto sample_x = torch::cat({sample_x1, sample_x2}, 0);
 
-    return std::make_tuple(grad_input, grad_alpha, grad_output, time_vector);
+    return std::make_tuple(grad_input, grad_alpha, grad_output, time_vector, first_transform, second_transform, x1_len, x2_len, scale1);
     // return std::make_tuple(gemm1, gemm2, gemm3, gemm4, sum_y1_column, sum_y2_column);
 }

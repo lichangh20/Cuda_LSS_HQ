@@ -280,8 +280,7 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 //Todo:output high corresponds to scale1 and zero1, low corresponds to scale2 and zero2
 template<typename scalar_t>
 __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2, const float * norm_small, const float * norm_large,
-                                        const bool * small_indices, const bool * large_indices, scalar_t * __restrict__ grad_output, 
-                                        const float scale_gemm1, const float scale_gemm2, int size, int ny){
+                                        scalar_t * __restrict__ grad_output, const float scale_gemm1, const float scale_gemm2, int size, int ny){
     // extern __shared__ float s[];
     // float * y_col = s;  // N_THREADS float
     
@@ -290,21 +289,16 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * ge
     // , col = x - row * ny
     float norm1 = norm_small[row];
     float norm2 = norm_large[row];
-    bool index1 = small_indices[row];
-    bool index2 = large_indices[row];
+    // bool index1 = small_indices[row];
+    // bool index2 = large_indices[row];
     // int64_t sumY = sum_y_column[col];
 
     // y_col[threadIdx.x] = sum_y_column[col];
     // __syncthreads();
 
     if (x<size){
-    //    output[x] = (gemm1[x] * scale_gemm1 + const_x1 * sumY) / norm1 + (gemm2[x] * scale_gemm2 + const_x2 * sumY) / norm2;
-        // float tmp1 = (gemm1[x] * scale_gemm1 + const_x1 * sumY) / norm1;
-        // output_low[x] = tmp1;
-        // float tmp2 = (gemm2[x] * scale_gemm2 + const_x2 * sumY) / norm2;
-        // output_high[x] = tmp2;
-        float smallValue = index1 ? 0 : (gemm1[x] * scale_gemm1) / norm1;
-        float largeValue = index2 ? 0 : (gemm2[x] * scale_gemm2) / norm2;
+        float smallValue = (gemm1[x] * scale_gemm1) / norm1;
+        float largeValue = (gemm2[x] * scale_gemm2) / norm2;
         grad_output[x] = smallValue + largeValue;
     }
 }
@@ -429,6 +423,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     auto option_transform = torch::TensorOptions().dtype(torch::kInt8).device(x.device());
     auto option_quantize = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     auto option_float = torch::TensorOptions().dtype(torch::kFloat32).device(x.device());
+    auto option_int = torch::TensorOptions().dtype(torch::kInt32).device(x.device());
+    auto option_output = torch::TensorOptions().dtype(torch::kFloat16).device(x.device());
     // torch::Tensor first_transform = torch::empty({nx, nz}, option_transform);
     // torch::Tensor first_quantize = torch::empty({nx, nz}, option_quantize);
     // torch::Tensor second_transform = torch::empty({nx, nz}, option_transform);
@@ -442,7 +438,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // float mx = std::max(x.max().item<float>() + 1e-8, 0.);
 
     int num_bins_half = pow(2, num_bits) - 2;
-    int num_bins = num_bins_half * num_bins_half;
+    // int num_bins = num_bins_half * num_bins_half;
     // int num_bins_clamp = num_bins_half / 2 - 1;
 
     // float scale1 = num_bins / (2 * max(fabs(mn), fabs(mx)));
@@ -466,14 +462,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
 
     // leverage score
     // TODO: use dim=0 because torch.linalg only supports dim=1
-    int threads = 32;
-    int blocks = nx;
-    // auto I = torch::eye({nx}, option_quantize);
-    // auto I2 = torch::cat({I, I}, 0);
+    // int threads = 32;
+    // int blocks = nx;
     // auto x_sample = torch::cat({first_quantize, second_quantize}, 0);
     // auto x1_len = torch::empty({nx,}, option_float);
     // auto x2_len = torch::empty({nx,}, option_float);
-    // auto I_len = torch::empty({nx,}, option_quantize);
 
     // int stride_x = nz / 32;
     // float scale_x1 = num_bins_half / scale1;
@@ -501,13 +494,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     //     x2_len.data_ptr<float>(),
     //     nx,nz,stride_x);
     // }));
-    // int stride_I = nx / 32;
-    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(I.scalar_type(), "linalg_cuda", ([&] {
-    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-    //     I.data_ptr<scalar_t>(), 
-    //     I_len.data_ptr<scalar_t>(),
-    //     nx,nx,stride_I);
-    // }));
     auto vec_norm = torch::cat({x1_len, x2_len});
     int len_norm = vec_norm.numel();
 
@@ -527,6 +513,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
         scale_norm,len_norm);
     }));
     auto sample_index = norm_activation_loop;
+    // int posNum = (norm_weight_loop > 0).sum().item<int>();
     // cudaDeviceSynchronize();
     // clock_t time_sample1_end = clock();
 
@@ -561,74 +548,79 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
         } 
         sample_index = torch::bernoulli(norm_activation_loop);
     }
-    // auto small_indices = torch::where(sample_index.index({Slice({None, len_norm/2})}) == 1)[0];
-    // auto small_left_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) != 1).squeeze();
-    // auto large_indices = torch::where(sample_index.index({Slice(len_norm/2)}) == 1)[0];
-    // auto large_left_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) != 1).squeeze();
-    auto left_indices = (sample_index != 1);
+    auto small_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) == 1).squeeze(1);
+    auto large_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) == 1).squeeze(1);
+    // auto left_indices = (sample_index != 1);
 
-    norm_activation_loop.index_put_({norm_activation_loop == 0}, 1);
-    // cudaDeviceSynchronize();
-    // clock_t time_sample6_end = clock();
-    // auto index_norm = vec_norm * len(vec_norm) / (2 * vec_norm.sum());
-
+    // norm_activation_loop.index_put_({norm_activation_loop == 0}, 1);
     // sample process
-    auto sample_x1 = first_transform;
-    auto sample_x2 = second_transform;
-    // auto sample_x1 = (first_quantize / norm_activation_loop.index({Slice({None, len_norm/2})}).unsqueeze(1)).to(torch::kFloat16);
-    // auto sample_x2 = (second_quantize / norm_activation_loop.index({Slice(len_norm/2)}).unsqueeze(1)).to(torch::kFloat16);
-    // auto Ind_small = torch::zeros_like(sample_x1);
-    // Ind_small.index_put_({small_indices,"..."}, 1);
-    // sample_x1 = sample_x1.mul(Ind_small);
-    // auto Ind_large = torch::zeros_like(sample_x2);
-    // Ind_large.index_put_({large_indices,"..."}, 1);
-    // sample_x2 = sample_x2.mul(Ind_large);
-    // auto sample_y = (qy * scaley).to(torch::kFloat16).t().contiguous();
-    auto sample_y = qy.t().contiguous();
+    dim3 grid2((nx*ny-1)/block.x+1);
+    int size = nx*ny;
 
+    int small_num_ = small_indices.numel();
+    int large_num_ = large_indices.numel();
+
+    auto sample_x1 = first_transform.index({small_indices});
+    auto sample_x2 = second_transform.index({large_indices});
+    auto sample_y = qy.t().contiguous();
+    
     cudaDeviceSynchronize();
     clock_t time_sample_end = clock();
 
     // pack process
-    auto sample_x1_int4 = torch::empty({nx, nz>>1}, option_transform);
-    auto sample_x2_int4 = torch::empty({nx, nz>>1}, option_transform);
+    auto sample_x1_int4 = torch::empty({small_num_, nz>>1}, option_transform);
+    auto sample_x2_int4 = torch::empty({large_num_, nz>>1}, option_transform);
     auto sample_y_int4 = torch::empty({ny, nz>>1}, option_transform);
-    int grid_size_x = nx*nz/2;
+    int grid_size_x1 = nz*small_num_/2;
+    int grid_size_x2 = nz*large_num_/2;
     int grid_size_y = nz*ny/2;
-    dim3 grid_pack_x((grid_size_x-1)/block.x+1);
+    dim3 grid_pack_x1((grid_size_x1-1)/block.x+1);
+    dim3 grid_pack_x2((grid_size_x2-1)/block.x+1);
     dim3 grid_pack_y((grid_size_y-1)/block.x+1);
-    pack_cuda_kernel<<<grid_pack_x,block>>>(sample_x1.data_ptr<int8_t>(), sample_x1_int4.data_ptr<int8_t>(), grid_size_x);
-    pack_cuda_kernel<<<grid_pack_x,block>>>(sample_x2.data_ptr<int8_t>(), sample_x2_int4.data_ptr<int8_t>(), grid_size_x);
+    if (small_num_ > 0) {
+        pack_cuda_kernel<<<grid_pack_x1,block>>>(sample_x1.data_ptr<int8_t>(), sample_x1_int4.data_ptr<int8_t>(), grid_size_x1);
+    }
+    if (large_num_ > 0) {
+        pack_cuda_kernel<<<grid_pack_x2,block>>>(sample_x2.data_ptr<int8_t>(), sample_x2_int4.data_ptr<int8_t>(), grid_size_x2);
+    }
     pack_cuda_kernel<<<grid_pack_y,block>>>(sample_y.data_ptr<int8_t>(), sample_y_int4.data_ptr<int8_t>(), grid_size_y);
 
     cudaDeviceSynchronize();
     clock_t time_pack_end = clock();
 
-    // gemm process
+
     cudaError_t result;
     int lda = nz;
     int ldb = nz;
     int ldc = ny;
     // Chunked matrix multiplication
-    auto gemm1 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
-    result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x1_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm1.data_ptr<int32_t>(), ldc);
-    // auto gemm1 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kFloat16));
-    // result = CutlassSgemmNN_fp16(nx, ny, nz, reinterpret_cast<cutlass::half_t *>(sample_x1.data_ptr()), lda, reinterpret_cast<cutlass::half_t *>(sample_y.data_ptr()), ldb, reinterpret_cast<cutlass::half_t *>(gemm1.data_ptr()), ldc);
+    auto gemm1 = torch::empty({small_num_,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
+    result = CutlassSgemmNN(small_num_, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x1_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm1.data_ptr<int32_t>(), ldc);
+    
+    auto gemm2 = torch::empty({large_num_,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
+    result = CutlassSgemmNN(large_num_, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x2_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm2.data_ptr<int32_t>(), ldc);
 
-    // cudaDeviceSynchronize();
-    // clock_t time_gemm1_end = clock();
-
-    auto gemm2 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
-    result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x2_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm2.data_ptr<int32_t>(), ldc);
-    // auto gemm2 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kFloat16));
-    // result = CutlassSgemmNN_fp16(nx, ny, nz, reinterpret_cast<cutlass::half_t *>(sample_x2.data_ptr()), lda, reinterpret_cast<cutlass::half_t *>(sample_y.data_ptr()), ldb, reinterpret_cast<cutlass::half_t *>(gemm2.data_ptr()), ldc);
     cudaDeviceSynchronize();
     clock_t time_gemm_end = clock();
 
+    auto gemm1_out = torch::zeros({nx,ny}, option_int);
+    auto gemm2_out = torch::zeros({nx,ny}, option_int);
+    gemm1_out.index_put_({small_indices}, gemm1);
+    gemm2_out.index_put_({large_indices}, gemm2);
+
+    // // gemm process
+    // cudaError_t result;
+    // int lda = nz;
+    // int ldb = nz;
+    // int ldc = ny;
+    // // Chunked matrix multiplication
+    // auto gemm1 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
+    // result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x1_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm1.data_ptr<int32_t>(), ldc);
+
+    // auto gemm2 = torch::empty({nx,ny}, at::device(at::kCUDA).dtype(torch::kInt32));
+    // result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(sample_x2_int4.data_ptr<int8_t>()), lda, reinterpret_cast<cutlass::int4b_t *>(sample_y_int4.data_ptr<int8_t>()), ldb, gemm2.data_ptr<int32_t>(), ldc);
+
     // dequantize process
-    dim3 grid2((nx*ny-1)/block.x+1);
-    // First dequantize higher 4 bits
-    auto option_output = torch::TensorOptions().dtype(torch::kFloat16).device(gemm1.device());
     // auto sum_y_column = torch::sum(qy, 0);
     // auto output_low = torch::empty({nx,ny}, option_output);
     // auto output_high = torch::empty({nx,ny}, option_output);
@@ -640,9 +632,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     float scale_gemm2 = scaley / (scale1);
     auto norm_small = norm_activation_loop.index({Slice({None, len_norm/2})});
     auto norm_large = norm_activation_loop.index({Slice(len_norm/2)});
-    auto small_indices = left_indices.index({Slice({None, len_norm/2})});
-    auto large_indices = left_indices.index({Slice(len_norm/2)});
-    int size = nx*ny;
+    // auto small_indices = left_indices.index({Slice({None, len_norm/2})});
+    // auto large_indices = left_indices.index({Slice(len_norm/2)});
 
     // AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "dequantize_cuda", ([&] {
     // dequantize_cuda_kernel_fp16<scalar_t><<<grid2, block>>>(
@@ -656,41 +647,21 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "dequantize_cuda", ([&] {
     // dequantize_cuda_kernel<scalar_t><<<grid2, block, N_THREADS * sizeof(float)>>>(
     dequantize_cuda_kernel<scalar_t><<<grid2, block>>>(
-        gemm1.data_ptr<int32_t>(), 
-        gemm2.data_ptr<int32_t>(),
+        gemm1_out.data_ptr<int32_t>(), 
+        gemm2_out.data_ptr<int32_t>(),
         norm_small.data_ptr<float>(),
         norm_large.data_ptr<float>(),
-        small_indices.data_ptr<bool>(),
-        large_indices.data_ptr<bool>(),
         grad_output.data_ptr<scalar_t>(),
-        // output_low.data_ptr<scalar_t>(),
-        // output_high.data_ptr<scalar_t>(),
         // sum_y_column.data_ptr<int64_t>(),
-        // const_x1, const_x2, 
         scale_gemm1, scale_gemm2,
         size, ny);
     }));
 
-    // cudaDeviceSynchronize();
-    // clock_t time_dequantize1_end = clock();
-
-    // output_low.index_fill_(0, small_left_indices, 0);
-    // output_high.index_fill_(0, large_left_indices, 0);
-    // output_low.index_put_({left_indices.index({Slice({None, len_norm/2})}),"..."}, 0);
-    // output_high.index_put_({left_indices.index({Slice(len_norm/2)}),"..."}, 0);
-    // cudaDeviceSynchronize();
-    // clock_t time_dequantize2_end = clock();
-    // grad_output = output_low + output_high;
-
     // auto Ind_small = torch::zeros_like(output_low);
     // Ind_small.index_put_({small_indices,"..."}, 1);
-    // // auto Index1 = torch::nonzero(norm_small == 1e-10).squeeze();
-    // // Ind_small.index_put_({Index1,"..."}, 0);
     // output_low = output_low.mul(Ind_small);
     // auto Ind_large = torch::zeros_like(output_high);
     // Ind_large.index_put_({large_indices,"..."}, 1);
-    // // auto Index2 = torch::nonzero(norm_large == 1e-10).squeeze();
-    // // Ind_large.index_put_({Index2,"..."}, 0);
     // output_high = output_high.mul(Ind_large);
 
     // AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "norm_cuda", ([&] {
@@ -745,18 +716,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // double quantize2_time = (double)(time_quantize_end - time_quantize1_end) / CLOCKS_PER_SEC;
     double leverage_time = (double)(time_leverage_end - time_quantize_end) / CLOCKS_PER_SEC;
     double sample_time = (double)((time_sample_end - time_leverage_end)) / CLOCKS_PER_SEC;
-    // double sample1_time = (double)((time_sample1_end - time_leverage_end)) / CLOCKS_PER_SEC;
-    // double sample2_time = (double)((time_sample2_end - time_sample1_end)) / CLOCKS_PER_SEC;
-    // double sample3_time = (double)((time_sample3_end - time_sample2_end)) / CLOCKS_PER_SEC;
-    // double sample4_time = (double)((time_sample4_end - time_sample3_end)) / CLOCKS_PER_SEC;
-    // double sample5_time = (double)((time_sample5_end - time_sample4_end)) / CLOCKS_PER_SEC;
-    // double sample6_time = (double)((time_sample6_end - time_sample5_end)) / CLOCKS_PER_SEC;
-    // double sample7_time = (double)((time_sample_end - time_sample6_end)) / CLOCKS_PER_SEC;
     double pack_time = (double)(time_pack_end - time_sample_end) / CLOCKS_PER_SEC;
     double gemm_time = (double)(time_gemm_end - time_pack_end) / CLOCKS_PER_SEC;
-    // double gemm2_time = (double)(time_gemm2_end - time_gemm1_end) / CLOCKS_PER_SEC;
-    // double dequantize1_time = (double)(time_dequantize1_end - time_gemm_end) / CLOCKS_PER_SEC;
-    // double dequantize2_time = (double)(time_dequantize2_end - time_dequantize1_end) / CLOCKS_PER_SEC;
     double dequantize_time = (double)(time_dequantize_end - time_gemm_end) / CLOCKS_PER_SEC;
     double LSQ_time = (double)(time_LSQ_end - time_dequantize_end) / CLOCKS_PER_SEC;
     // double LSS_time = (double)(time_LSS_end - time_dequantize_end) / CLOCKS_PER_SEC;
@@ -766,20 +727,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // time_vector.push_back(quantize2_time);
     time_vector.push_back(leverage_time);
     time_vector.push_back(sample_time);
-    // time_vector.push_back(sample1_time);
-    // time_vector.push_back(sample2_time);
-    // time_vector.push_back(sample3_time);
-    // time_vector.push_back(sample4_time);
-    // time_vector.push_back(sample5_time);
-    // time_vector.push_back(sample6_time);
-    // time_vector.push_back(sample7_time);
     time_vector.push_back(pack_time);
     time_vector.push_back(gemm_time);
-    // time_vector.push_back(gemm2_time);
-    // time_vector.push_back(dequantize1_time);
-    // time_vector.push_back(dequantize2_time);
     time_vector.push_back(dequantize_time);
-    // time_vector.push_back(LSS_time);
     time_vector.push_back(LSQ_time);
 
     return std::make_tuple(grad_input, grad_alpha, gemm1, gemm2, time_vector, whilenum);

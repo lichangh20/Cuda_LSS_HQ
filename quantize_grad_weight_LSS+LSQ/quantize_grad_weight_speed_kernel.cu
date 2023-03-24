@@ -23,8 +23,8 @@ using namespace torch::indexing;
 
 template<typename scalar_t>
 __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, int8_t * second_transform, 
-                                    const int num_bins_half, const int num_bins_clamp, const float scale, int size, unsigned long seed){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+                                    const int num_bins_half, const int num_bins_clamp, const float scale, long long int size, unsigned long seed){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         // set random value
         curandStatePhilox4_32_10_t state;
@@ -46,143 +46,20 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
     }
 }
 
-// template<typename scalar_t>
-// __global__ void second_quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO_transform, scalar_t * __restrict__  MatO_quantize, const float scale, const float  zero_point, int size, unsigned long seed){
-//     int x = threadIdx.x + blockIdx.x * blockDim.x;
-//     if (x<size){
-//         // set random value
-//         curandStatePhilox4_32_10_t state;
-//         curand_init(seed, x, 0, &state);
-//         const float noise = curand_uniform(&state);
-
-//         float input = MatI[x];
-//         // scalar_t tmp1 = (input - zero_point) * scale + noise - 8.5;
-//         // // scalar_t tmp1 = (MatI[x] - zero_point) * scale - 8;
-//         // int tmp2 = tmp1;
-//         // int bias = (tmp1 - tmp2) * 2;
-//         // MatO_transform[x] = std::clamp(tmp2+bias, -8, 7);
-//         float tmp1 = round((input - zero_point) * scale + noise - 8.5);
-//         MatO_transform[x] = std::clamp((int)(tmp1), -8, 7);
-//         MatO_quantize[x] = (MatO_transform[x] + 8) / scale + zero_point;
-//     }
-// }
-
-__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         out[x] = (in[(x<<1)+1] << 4) | (in[x<<1] & 15);
     }
 }
 
 template<typename scalar_t>
-__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
         out[x] = in[x] * scale;
     }
-}
-
-cudaError_t CutlassSgemmNN_fp16(
-  const int M,
-  const int N,
-  const int K,
-  const cutlass::half_t *A,
-  int lda,
-  const cutlass::half_t *B,
-  int ldb,
-  cutlass::half_t *C,
-  int ldc) {
-
-// The code section below describes datatype for input, output matrices and computation between
-// elements in input matrices.
-using ElementAccumulator = float;                 // <- data type of accumulator
-using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = cutlass::half_t;                       // <- data type of elements in input matrix A
-using ElementInputB = cutlass::half_t;                       // <- data type of elements in input matrix B
-using ElementOutput = cutlass::half_t;                      // <- data type of elements in output matrix D
-
-// The code section below describes matrix layout of input and output matrices. Column Major for
-// Matrix A, Row Major for Matrix B and Row Major for Matrix C
-using LayoutInputA = cutlass::layout::RowMajor;
-using LayoutInputB = cutlass::layout::ColumnMajor;
-using LayoutOutput = cutlass::layout::RowMajor;
-
-// This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
-using MMAOp = cutlass::arch::OpClassTensorOp;
-
-// This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm70;
-
-// This code section describes the tile size a thread block will compute
-using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<256, 128, 32>;  // <- threadblock tile M = 128, N = 256, K = 64
-// This code section describes tile size a warp will compute
-using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;  // <- warp tile M = 64, N = 64, K = 64 
-// This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 4>;  // <- MMA Op tile M = 8, N = 8, K = 16
-
-// This code section describes how threadblocks are scheduled on GPU
-using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
-
-// This code section describes the epilogue part of the kernel
-using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-    ElementOutput,                                     // <- data type of output matrix
-    4,  // <- the number of elements per vectorized
-                                                       // memory access. For a byte, it's 16
-                                                       // elements. This becomes the vector width of
-                                                       // math instructions in the epilogue too
-    ElementAccumulator,                                // <- data type of accumulator
-    ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
-
-// Number of pipelines you want to use
-constexpr int NumStages = 2;
-
-using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
-                                         LayoutInputA,
-                                         ElementInputB,
-                                         LayoutInputB,
-                                         ElementOutput,
-                                         LayoutOutput,
-                                         ElementAccumulator,
-                                         MMAOp,
-                                         SmArch,
-                                         ShapeMMAThreadBlock,
-                                         ShapeMMAWarp,
-                                         ShapeMMAOp,
-                                         EpilogueOp,
-                                         SwizzleThreadBlock,
-                                         NumStages>;
-  // Create a tuple of problem size for matrix multiplication
-  cutlass::gemm::GemmCoord problem_size(M, N, K);
-
-  // Initialize alpha and beta for dot product computation
-  ElementComputeEpilogue alpha = ElementComputeEpilogue(1);
-  ElementComputeEpilogue beta = ElementComputeEpilogue(0);
-    
-  // Split K dimension into 1 partitions
-  int split_k_slices = 1;
-
-  // Create a tuple of gemm kernel arguments. This is later passed as arguments to launch
-  // instantiated CUTLASS kernel
-  typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
-                                     {A, lda},  // <- reference to matrix A on device
-                                     {B, ldb},  // <- reference to matrix B on device
-                                     {C, ldc},  // <- reference to matrix C on device
-                                     {C, ldc},  // <- reference to matrix D on device
-                                     {alpha, beta},          // <- tuple of alpha and beta
-                                     split_k_slices};        // <- k-dimension split factor
-    Gemm gemm_op;
-
-    // Launch initialized CUTLASS kernel
-    cutlass::Status status = gemm_op(arguments);
-
-  if (status != cutlass::Status::kSuccess) {
-    return cudaErrorUnknown;
-  }
-
-  // Return success, if no errors were encountered.
-  return cudaSuccess;
 }
 
 /// Define a CUTLASS GEMM template and launch a GEMM kernel.
@@ -215,15 +92,15 @@ using LayoutOutput = cutlass::layout::RowMajor;
 using MMAOp = cutlass::arch::OpClassTensorOp;
 
 // This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm75;
+using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<256, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
+    cutlass::gemm::GemmShape<128, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
 // This code section describes tile size a warp will compute
 using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 128>;  // <- warp tile M = 64, N = 64, K = 64 
 // This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 32>;  // <- MMA Op tile M = 8, N = 8, K = 16
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 64>;  // <- MMA Op tile M = 8, N = 8, K = 16
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
@@ -239,7 +116,7 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
 // Number of pipelines you want to use
-constexpr int NumStages = 2;
+constexpr int NumStages = 3;
 
 using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
                                          LayoutInputA,
@@ -292,8 +169,8 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 template<typename scalar_t>
 __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2, const scalar_t * __restrict__ gemm3, 
                                         const scalar_t * __restrict__ gemm4, scalar_t * __restrict__ output, 
-                                        const float scale_gemm1, const float scale_gemm2, int size){  
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+                                        const float scale_gemm1, const float scale_gemm2, long long int size){  
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     // int row = x / ny, col = x - row * ny;
 
     if (x<size){
@@ -304,31 +181,21 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * ge
 
 template<typename scalar_t>
 __global__ void dequantize2_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2, scalar_t * __restrict__ output, 
-                                        const float scale_gemm1, const float scale_gemm2, int size){  
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+                                        const float scale_gemm1, const float scale_gemm2, long long int size){  
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
        output[x] = gemm1[x] * scale_gemm1 + gemm2[x] * scale_gemm2;
     }
 }
 
-// template<typename scalar_t>
-// __global__ void dequantize_cuda_kernel_fp16(const scalar_t * __restrict__ gemm1, const scalar_t * __restrict__ gemm2, scalar_t * __restrict__ output, 
-//                                         int size){  
-//     int x = threadIdx.x + blockIdx.x * blockDim.x;
-
-//     if (x<size){
-//        output[x] = gemm1[x] + gemm2[x];
-//     }
-// }
-
 template<typename scalar_t>
-__global__ void LSQ_cuda_kernel(const scalar_t * __restrict__ hadamard_weight, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
-                                scalar_t * __restrict__ grad_input, const float scale_weight, const float grad_scale, const int size){  
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void LSQ_cuda_kernel(const int8_t * q_weight, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
+                                scalar_t * __restrict__ grad_input, const float grad_scale, const long long int size){  
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
-       float q_w = hadamard_weight[x] / scale_weight;
+       scalar_t q_w = q_weight[x];
        scalar_t indicate_small = (q_w < -8);
        scalar_t indicate_big = (q_w > 7);
        scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
@@ -449,11 +316,11 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, float> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor y, torch::Tensor qy, float scaley, torch::Tensor hadamard_weight, torch::Tensor scale_weight){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, float> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor q_weight){
     std::vector<double> time_vector;
-    int nz = x.size(0);
-    int nx = x.size(1);
-    int ny = y.size(1);
+    long long int nz = x.size(0);
+    long long int nx = x.size(1);
+    long long int ny = qy.size(1);
 
     cudaDeviceSynchronize();
     clock_t time_quantize_start = clock();
@@ -468,7 +335,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     dim3 block(N_THREADS);
     dim3 grid1((nx*nz-1)/block.x+1);
-    int size_quantize = nz * nx ;
+    long long int size_quantize = nz * nx ;
     // process of first quantize
     torch::Tensor min_x = torch::empty({nz, }, option_quantize);
     torch::Tensor max_x = torch::empty({nz, }, option_quantize);
@@ -541,12 +408,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         nz,nx,stride_x, scale_x2);
 
     int stride_y = ny / 32;
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(y.scalar_type(), "linalg_cuda", ([&] {
-    linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
-        y.data_ptr<scalar_t>(), 
+    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(y.scalar_type(), "linalg_cuda", ([&] {
+    // linalg_norm_cuda_kernel<scalar_t><<<blocks, threads>>>(
+    //     y.data_ptr<scalar_t>(), 
+    //     y_len.data_ptr<float>(),
+    //     nz,ny,stride_y);
+    // }));
+    linalg_normInt_cuda_kernel<<<blocks, threads>>>(
+        qy.data_ptr<int8_t>(), 
         y_len.data_ptr<float>(),
-        nz,ny,stride_y);
-    }));
+        nz,ny,stride_y, scaley);
 
     // TODO: whether need to change dtype from half into float? It depends 
     auto vec_norm = torch::cat({torch::mul(x1_len, y_len), torch::mul(x2_len, y_len)});
@@ -584,7 +455,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             }
             auto small_index = (norm_weight_loop < 1);
             auto small_value = norm_weight_loop.index({small_index});
-            int small_len = small_value.numel();
+            long long int small_len = small_value.numel();
             cnt = len_norm - small_len;
             norm_weight_loop = torch::clamp(norm_weight_loop, 0, 1);
             bool breakloop = (small_value.max() == 0).item<bool>();
@@ -614,28 +485,30 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     auto option_output = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     auto grad_output = torch::empty({nx,ny}, option_output);
     dim3 grid2((nx*ny-1)/block.x+1);
-    int size = nx*ny;
+    long long int size = nx*ny;
 
+    clock_t time_sampleflag_end;
     clock_t time_sample_end;
     clock_t time_pack_end;
     clock_t time_gemm_end;
     clock_t time_dequantize_end;
     cudaDeviceSynchronize();
     clock_t time_method_start = clock();
+    int small_num_, large_num_;
 
     if (flag == 1){
         auto norm_small_indices = (norm_weight_loop.index({small_indices}) == 1);
         auto small_num = norm_small_indices.sum();
         // TODO: test if .int() can work in libtorch
         small_num = ((small_num / 32).floor() * 32).to(torch::kInt32);
-        int small_num_ = small_num.item<int>();
+        small_num_ = small_num.item<int>();
         auto small_int_indices = small_indices.index({norm_small_indices}).index({Slice({None, small_num_})});
         auto small_left_indices = small_indices.index({~torch::isin(small_indices, small_int_indices)});
         auto norm_large_indices = (norm_weight_loop.index({large_indices + len_norm / 2}) == 1);
         auto large_num = norm_large_indices.sum();
         // TODO: test if .int() can work in libtorch
         large_num = ((large_num / 32).floor() * 32).to(torch::kInt32);
-        int large_num_ = large_num.item<int>();
+        large_num_ = large_num.item<int>();
         auto large_int_indices = large_indices.index({norm_large_indices}).index({Slice({None, large_num_})});
         auto large_left_indices = large_indices.index({~torch::isin(large_indices, large_int_indices)});
         // auto _index = torch::nonzero((sample_index == 1)).squeeze();
@@ -651,6 +524,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         // auto norm_weight_large = norm_weight_loop.index({large_indices + len_norm / 2});
         // auto output = torch::cat({first_quantize, second_quantize});
         // output = output / norm_weight_loop.unsqueeze(1);
+        cudaDeviceSynchronize();
+        time_sampleflag_end = clock();
 
 
         //TODO: suppose an easy situation so that it can be faster
@@ -673,10 +548,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         auto sample_x2_int4 = torch::empty({nx, large_num_>>1}, option_transform);
         auto sample_y1_int4 = torch::empty({ny, small_num_>>1}, option_transform);
         auto sample_y2_int4 = torch::empty({ny, large_num_>>1}, option_transform);
-        int grid_size_x1 = nx*small_num_/2;
-        int grid_size_x2 = nx*large_num_/2;
-        int grid_size_y1 = ny*small_num_/2;
-        int grid_size_y2 = ny*large_num_/2;
+        long long int grid_size_x1 = nx*small_num_/2;
+        long long int grid_size_x2 = nx*large_num_/2;
+        long long int grid_size_y1 = ny*small_num_/2;
+        long long int grid_size_y2 = ny*large_num_/2;
         dim3 grid_pack_x1((grid_size_x1-1)/block.x+1);
         dim3 grid_pack_x2((grid_size_x2-1)/block.x+1);
         dim3 grid_pack_y1((grid_size_y1-1)/block.x+1);
@@ -764,11 +639,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     } else if (flag == 2){
         if (cnt > 800){
-            int small_num_ = floor(small_indices.numel() / 32.0) * 32;
-            int large_num_ = floor(large_indices.numel() / 32.0) * 32;
+            small_num_ = floor(small_indices.numel() / 32.0) * 32;
+            large_num_ = floor(large_indices.numel() / 32.0) * 32;
 
             auto small_int_indices = small_indices.index({Slice({None, small_num_})});
             auto large_int_indices = large_indices.index({Slice({None, large_num_})});
+            cudaDeviceSynchronize();
+            time_sampleflag_end = clock();
 
             auto sample_x1 = first_transform.index({small_int_indices}).t().contiguous();
             auto sample_x2 = second_transform.index({large_int_indices}).t().contiguous();
@@ -782,10 +659,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             auto sample_x2_int4 = torch::empty({nx, large_num_>>1}, option_transform);
             auto sample_y1_int4 = torch::empty({ny, small_num_>>1}, option_transform);
             auto sample_y2_int4 = torch::empty({ny, large_num_>>1}, option_transform);
-            int grid_size_x1 = nx*small_num_/2;
-            int grid_size_x2 = nx*large_num_/2;
-            int grid_size_y1 = ny*small_num_/2;
-            int grid_size_y2 = ny*large_num_/2;
+            long long int grid_size_x1 = nx*small_num_/2;
+            long long int grid_size_x2 = nx*large_num_/2;
+            long long int grid_size_y1 = ny*small_num_/2;
+            long long int grid_size_y2 = ny*large_num_/2;
             dim3 grid_pack_x1((grid_size_x1-1)/block.x+1);
             dim3 grid_pack_x2((grid_size_x2-1)/block.x+1);
             dim3 grid_pack_y1((grid_size_y1-1)/block.x+1);
@@ -838,14 +715,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             cudaDeviceSynchronize();
             time_dequantize_end = clock();
         } else{
-            int small_num_ = ceil(small_indices.numel() / 32.0) * 32;
-            int large_num_ = ceil(large_indices.numel() / 32.0) * 32;
+            small_num_ = ceil(small_indices.numel() / 32.0) * 32;
+            large_num_ = ceil(large_indices.numel() / 32.0) * 32;
 
             std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
             std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
 
             torch::nn::ZeroPad2d pad_small(padding_small);
             torch::nn::ZeroPad2d pad_large(padding_large);
+            cudaDeviceSynchronize();
+            time_sampleflag_end = clock();
 
             auto sample_x1 = pad_small(first_transform.index({small_indices})).t().contiguous();
             auto sample_x2 = pad_large(second_transform.index({large_indices})).t().contiguous();
@@ -859,10 +738,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             auto sample_x2_int4 = torch::empty({nx, large_num_>>1}, option_transform);
             auto sample_y1_int4 = torch::empty({ny, small_num_>>1}, option_transform);
             auto sample_y2_int4 = torch::empty({ny, large_num_>>1}, option_transform);
-            int grid_size_x1 = nx*small_num_/2;
-            int grid_size_x2 = nx*large_num_/2;
-            int grid_size_y1 = ny*small_num_/2;
-            int grid_size_y2 = ny*large_num_/2;
+            long long int grid_size_x1 = nx*small_num_/2;
+            long long int grid_size_x2 = nx*large_num_/2;
+            long long int grid_size_y1 = ny*small_num_/2;
+            long long int grid_size_y2 = ny*large_num_/2;
             dim3 grid_pack_x1((grid_size_x1-1)/block.x+1);
             dim3 grid_pack_x2((grid_size_x2-1)/block.x+1);
             dim3 grid_pack_y1((grid_size_y1-1)/block.x+1);
@@ -927,16 +806,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     //     size);
     // }));
 
-    float grad_scale = 1.0 / sqrt(hadamard_weight.numel() * 7);
+    float grad_scale = 1.0 / sqrt(q_weight.numel() * 7);
     auto grad_alpha_out = torch::empty({nx,ny}, option_output);
     auto grad_input = torch::empty({nx,ny}, option_output);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_cuda", ([&] {
     LSQ_cuda_kernel<scalar_t><<<grid2, block>>>(
-        hadamard_weight.data_ptr<scalar_t>(), 
+        q_weight.data_ptr<int8_t>(), 
         grad_output.data_ptr<scalar_t>(),
         grad_alpha_out.data_ptr<scalar_t>(),
         grad_input.data_ptr<scalar_t>(),
-        scale_weight.item<float>(), grad_scale, size);
+        grad_scale, size);
     }));
 
     // auto q_w = hadamard_weight / scale_weight;
@@ -956,6 +835,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     double quantize_time = (double)(time_quantize_end - time_quantize_start) / CLOCKS_PER_SEC;
     double leverage_time = (double)(time_leverage_end - time_quantize_end) / CLOCKS_PER_SEC;
     double sample_time = (double)(time_sample_end - time_leverage_end) / CLOCKS_PER_SEC;
+    // double sample1_time = (double)(time_method_start - time_leverage_end) / CLOCKS_PER_SEC;
+    // double sample2_time = (double)(time_sampleflag_end - time_method_start) / CLOCKS_PER_SEC;
+    // double sample3_time = (double)(time_sample_end - time_sampleflag_end) / CLOCKS_PER_SEC;
     double pack_time = (double)(time_pack_end - time_sample_end) / CLOCKS_PER_SEC;
     double gemm_time = (double)(time_gemm_end - time_pack_end) / CLOCKS_PER_SEC;
     double dequantize_time = (double)(time_dequantize_end - time_gemm_end) / CLOCKS_PER_SEC;
@@ -979,8 +861,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     // time_vector.push_back(quantize1_time);
     time_vector.push_back(quantize_time);
     time_vector.push_back(leverage_time);
-    // time_vector.push_back(sample_time);
     time_vector.push_back(sample_time);
+    // time_vector.push_back(sample1_time);
+    // time_vector.push_back(sample2_time);
+    // time_vector.push_back(sample3_time);
     time_vector.push_back(pack_time);
     time_vector.push_back(gemm_time);
     time_vector.push_back(dequantize_time);

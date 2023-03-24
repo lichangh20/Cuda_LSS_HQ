@@ -19,8 +19,8 @@
 #define N_THREADS 256
 
 template<typename scalar_t>
-__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO, const float scale, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO, const float scale, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         //TODO: Method 2
         // scalar_t temp1 = MatI[x] / scale;
@@ -32,8 +32,8 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
     }
 }
 
-__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         out[x] = (in[(x<<1)+1] << 4) | (in[x<<1] & 15);
     }
@@ -69,15 +69,15 @@ using LayoutOutput = cutlass::layout::RowMajor;
 using MMAOp = cutlass::arch::OpClassTensorOp;
 
 // This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm75;
+using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<256, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
+    cutlass::gemm::GemmShape<128, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
 // This code section describes tile size a warp will compute
 using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 128>;  // <- warp tile M = 64, N = 64, K = 64 
 // This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 32>;  // <- MMA Op tile M = 8, N = 8, K = 16
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 64>;  // <- MMA Op tile M = 8, N = 8, K = 16
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
@@ -93,7 +93,7 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
 // Number of pipelines you want to use
-constexpr int NumStages = 2;
+constexpr int NumStages = 3;
 
 using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
                                          LayoutInputA,
@@ -142,20 +142,21 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 }
 
 template<typename scalar_t>
-__global__ void dequantize_cuda_kernel(const int32_t * gemm, scalar_t * __restrict__ output, const float scale, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void dequantize_cuda_kernel(const int32_t * gemm, scalar_t * __restrict__ output, const float scale, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         output[x] = scale * gemm[x];
+        // output[x] = 0;
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, long long int> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
     std::vector<double> time_vector;
     cudaError_t result;
     //TODO: remember that input y is transposed
-    int nx = hx.size(0);
-    int nz = hx.size(1);
-    int ny = hy.size(0);
+    long long int nx = hx.size(0);
+    long long int nz = hx.size(1);
+    long long int ny = hy.size(0);
 
     //TODO: divide hadmard matrix by scale + convert data
     auto option_quantize = torch::TensorOptions().dtype(torch::kInt8).device(hx.device());
@@ -166,7 +167,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
 
     dim3 grid1((nx*nz-1)/(block.x)+1);
     torch::Tensor q_x = torch::empty({nx,nz}, option_quantize);
-    int hx_size = (nx*nz);
+    long long int hx_size = (nx*nz);
     // process of quantize
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(hx.scalar_type(), "quantize_cuda", ([&] {
     quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
@@ -180,7 +181,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
 
     dim3 grid2((ny*nz-1)/(block.x)+1);
     torch::Tensor q_y = torch::empty({ny,nz}, option_quantize);
-    int hy_size = (ny*nz);
+    long long int hy_size = (ny*nz);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(hy.scalar_type(), "quantize_cuda", ([&] {
     quantize_cuda_kernel<scalar_t><<<grid2, block>>>(
         hy.data_ptr<scalar_t>(),
@@ -224,7 +225,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     auto option_dequantize = torch::TensorOptions().dtype(hx.dtype()).device(hx.device());
     torch::Tensor output = torch::empty({nx, ny}, option_dequantize);
     float scale = scale_x * scale_y;
-    int size = nx * ny;
+    long long int size = nx * ny;
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(output.scalar_type(), "dequantize_cuda", ([&] {
     dequantize_cuda_kernel<scalar_t><<<grid3, block>>>(
         gemm.data_ptr<int32_t>(), 
@@ -248,5 +249,5 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>> qua
     time_vector.push_back(dequantize_time);
  
     // return output;
-    return std::make_tuple(output, q_x, q_y, time_vector);
+    return std::make_tuple(output, q_x, q_y, time_vector, gemm, size);
 }

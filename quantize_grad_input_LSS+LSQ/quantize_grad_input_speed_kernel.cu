@@ -19,8 +19,8 @@ using namespace torch::indexing;
 
 template<typename scalar_t>
 __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * first_transform, int8_t * second_transform, 
-                                    const int num_bins_half, const int num_bins_clamp, const float scale, int size, unsigned long seed){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+                                    const int num_bins_half, const int num_bins_clamp, const float scale, long long int size, unsigned long seed){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         // set random value
         curandStatePhilox4_32_10_t state;
@@ -42,135 +42,11 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
     }
 }
 
-// template<typename scalar_t>
-// __global__ void second_quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO_transform, scalar_t * __restrict__  MatO_quantize, const float scale, const float  zero_point, int size, unsigned long seed){
-//     int x = threadIdx.x + blockIdx.x * blockDim.x;
-//     if (x<size){
-//         // set random value
-//         curandStatePhilox4_32_10_t state;
-//         curand_init(seed, x, 0, &state);
-//         const float noise = curand_uniform(&state);
-
-//         float input = MatI[x];
-//         // scalar_t tmp1 = (input - zero_point) * scale + noise - 8.5;
-
-//         // // scalar_t tmp1 = (MatI[x] - zero_point) * scale - 8;
-//         // int tmp2 = tmp1;
-//         // int bias = (tmp1 - tmp2) * 2;
-//         // MatO_transform[x] = std::clamp(tmp2+bias, -8, 7);
-//         float tmp1 = round((input - zero_point) * scale + noise - 8.5);
-//         MatO_transform[x] = std::clamp((int)(tmp1), -8, 7);
-//         MatO_quantize[x] = (MatO_transform[x] + 8) / scale + zero_point;
-//     }
-// }
-
-__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void pack_cuda_kernel(int8_t * in, int8_t * out, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         out[x] = (in[(x<<1)+1] << 4) | (in[x<<1] & 15);
     }
-}
-
-cudaError_t CutlassSgemmNN_fp16(
-  const int M,
-  const int N,
-  const int K,
-  const cutlass::half_t *A,
-  int lda,
-  const cutlass::half_t *B,
-  int ldb,
-  cutlass::half_t *C,
-  int ldc) {
-
-// The code section below describes datatype for input, output matrices and computation between
-// elements in input matrices.
-using ElementAccumulator = float;                 // <- data type of accumulator
-using ElementComputeEpilogue = ElementAccumulator;  // <- data type of epilogue operations
-using ElementInputA = cutlass::half_t;                       // <- data type of elements in input matrix A
-using ElementInputB = cutlass::half_t;                       // <- data type of elements in input matrix B
-using ElementOutput = cutlass::half_t;                      // <- data type of elements in output matrix D
-
-// The code section below describes matrix layout of input and output matrices. Column Major for
-// Matrix A, Row Major for Matrix B and Row Major for Matrix C
-using LayoutInputA = cutlass::layout::RowMajor;
-using LayoutInputB = cutlass::layout::ColumnMajor;
-using LayoutOutput = cutlass::layout::RowMajor;
-
-// This code section describes whether you want to use tensor cores or regular SIMT cores on GPU SM
-using MMAOp = cutlass::arch::OpClassTensorOp;
-
-// This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm70;
-
-// This code section describes the tile size a thread block will compute
-using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<256, 128, 32>;  // <- threadblock tile M = 128, N = 256, K = 64
-// This code section describes tile size a warp will compute
-using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;  // <- warp tile M = 64, N = 64, K = 64 
-// This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 4>;  // <- MMA Op tile M = 8, N = 8, K = 16
-
-// This code section describes how threadblocks are scheduled on GPU
-using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
-
-// This code section describes the epilogue part of the kernel
-using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-    ElementOutput,                                     // <- data type of output matrix
-    4,  // <- the number of elements per vectorized
-                                                       // memory access. For a byte, it's 16
-                                                       // elements. This becomes the vector width of
-                                                       // math instructions in the epilogue too
-    ElementAccumulator,                                // <- data type of accumulator
-    ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
-
-// Number of pipelines you want to use
-constexpr int NumStages = 2;
-
-using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
-                                         LayoutInputA,
-                                         ElementInputB,
-                                         LayoutInputB,
-                                         ElementOutput,
-                                         LayoutOutput,
-                                         ElementAccumulator,
-                                         MMAOp,
-                                         SmArch,
-                                         ShapeMMAThreadBlock,
-                                         ShapeMMAWarp,
-                                         ShapeMMAOp,
-                                         EpilogueOp,
-                                         SwizzleThreadBlock,
-                                         NumStages>;
-  // Create a tuple of problem size for matrix multiplication
-  cutlass::gemm::GemmCoord problem_size(M, N, K);
-
-  // Initialize alpha and beta for dot product computation
-  ElementComputeEpilogue alpha = ElementComputeEpilogue(1);
-  ElementComputeEpilogue beta = ElementComputeEpilogue(0);
-    
-  // Split K dimension into 1 partitions
-  int split_k_slices = 1;
-
-  // Create a tuple of gemm kernel arguments. This is later passed as arguments to launch
-  // instantiated CUTLASS kernel
-  typename Gemm::Arguments arguments{problem_size,  // <- problem size of matrix multiplication
-                                     {A, lda},  // <- reference to matrix A on device
-                                     {B, ldb},  // <- reference to matrix B on device
-                                     {C, ldc},  // <- reference to matrix C on device
-                                     {C, ldc},  // <- reference to matrix D on device
-                                     {alpha, beta},          // <- tuple of alpha and beta
-                                     split_k_slices};        // <- k-dimension split factor
-    Gemm gemm_op;
-
-    // Launch initialized CUTLASS kernel
-    cutlass::Status status = gemm_op(arguments);
-
-  if (status != cutlass::Status::kSuccess) {
-    return cudaErrorUnknown;
-  }
-
-  // Return success, if no errors were encountered.
-  return cudaSuccess;
 }
 
 /// Define a CUTLASS GEMM template and launch a GEMM kernel.
@@ -203,15 +79,15 @@ using LayoutOutput = cutlass::layout::RowMajor;
 using MMAOp = cutlass::arch::OpClassTensorOp;
 
 // This code section describes CUDA SM architecture number
-using SmArch = cutlass::arch::Sm75;
+using SmArch = cutlass::arch::Sm80;
 
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock =
-    cutlass::gemm::GemmShape<256, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
+    cutlass::gemm::GemmShape<128, 128, 128>;  // <- threadblock tile M = 128, N = 256, K = 64
 // This code section describes tile size a warp will compute
 using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 128>;  // <- warp tile M = 64, N = 64, K = 64 
 // This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 32>;  // <- MMA Op tile M = 8, N = 8, K = 16
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 64>;  // <- MMA Op tile M = 8, N = 8, K = 16
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;  // <- ??
@@ -227,7 +103,7 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ElementComputeEpilogue>;  // <- data type for alpha/beta in linear combination function
 
 // Number of pipelines you want to use
-constexpr int NumStages = 2;
+constexpr int NumStages = 3;
 
 using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
                                          LayoutInputA,
@@ -280,11 +156,11 @@ using Gemm = cutlass::gemm::device::Gemm<ElementInputA,
 //Todo:output high corresponds to scale1 and zero1, low corresponds to scale2 and zero2
 template<typename scalar_t>
 __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * gemm2, const float * norm_small, const float * norm_large,
-                                        scalar_t * __restrict__ grad_output, const float scale_gemm1, const float scale_gemm2, int size, int ny){
+                                        scalar_t * __restrict__ grad_output, const float scale_gemm1, const float scale_gemm2, long long int size, int ny){
     // extern __shared__ float s[];
     // float * y_col = s;  // N_THREADS float
     
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     int row = x / ny;
     // , col = x - row * ny
     float norm1 = norm_small[row];
@@ -305,8 +181,8 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm1, const int32_t * ge
 
 template<typename scalar_t>
 __global__ void norm_cuda_kernel(const float * norm_small, const float * norm_large, const scalar_t * __restrict__ output_low, const scalar_t * __restrict__ output_high, 
-                                scalar_t * __restrict__ grad_output, int size, int ny){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+                                scalar_t * __restrict__ grad_output, long long int size, int ny){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     int row = x / ny;
     float norm1 = norm_small[row];
     float norm2 = norm_large[row];
@@ -318,31 +194,21 @@ __global__ void norm_cuda_kernel(const float * norm_small, const float * norm_la
 }
 
 template<typename scalar_t>
-__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, int size){
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __restrict__ out, float scale, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
         out[x] = in[x] * scale;
     }
 }
 
-// template<typename scalar_t>
-// __global__ void dequantize_cuda_kernel_fp16(const scalar_t * __restrict__ gemm1, const scalar_t * __restrict__ gemm2, scalar_t * __restrict__ output, 
-//                                         int size){  
-//     int x = threadIdx.x + blockIdx.x * blockDim.x;
-
-//     if (x<size){
-//        output[x] = gemm1[x] + gemm2[x];
-//     }
-// }
-
 template<typename scalar_t>
-__global__ void LSQ_cuda_kernel(const scalar_t * __restrict__ hadamard_activation, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
-                                scalar_t * __restrict__ grad_input, const float scale_activation, const float grad_scale, const int size){  
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
+__global__ void LSQ_cuda_kernel(const int8_t * q_activation, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
+                                scalar_t * __restrict__ grad_input, const float grad_scale, const long long int size){  
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
-       float q_w = hadamard_activation[x] / scale_activation;
+       scalar_t q_w = q_activation[x];
        scalar_t indicate_small = (q_w < -8);
        scalar_t indicate_big = (q_w > 7);
        scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
@@ -357,33 +223,6 @@ __device__ __inline__ c10::Half __shfl_down_sync(const unsigned mask, const c10:
                                                  const unsigned int delta, const int width) {
   __half var_ = var;
   return __shfl_down_sync(mask, var_, delta, width);
-}
-
-//TODO: N means rows, D means cols
-template<typename scalar_t>
-__global__ void linalg_norm_cuda_kernel(const scalar_t * __restrict__ in, float * linalg, int N, int D, int stride_D){
-  float sum_val = 0;
-
-  for (int64_t k1_outer = 0; k1_outer < stride_D; ++k1_outer) {
-    float temp = in[blockIdx.x * D + (k1_outer << 5) + threadIdx.x];
-    sum_val += temp * temp;
-  }
-
-  unsigned int mask;
-  float sum_val_t;
-  mask = __activemask();
-
-  sum_val_t = __shfl_down_sync(mask, sum_val, 16, 32);
-  sum_val += sum_val_t;
-  sum_val_t = __shfl_down_sync(mask, sum_val, 8, 32);
-  sum_val += sum_val_t;
-  sum_val_t = __shfl_down_sync(mask, sum_val, 4, 32);
-  sum_val += sum_val_t;
-  sum_val_t = __shfl_down_sync(mask, sum_val, 2, 32);
-  sum_val += sum_val_t;
-  sum_val_t = __shfl_down_sync(mask, sum_val, 1, 32);
-  sum_val += sum_val_t;
-  linalg[blockIdx.x] = sqrt(sum_val);
 }
 
 __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, int N, int D, int stride_D, float scale){
@@ -411,11 +250,11 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor hadamard_activation, torch::Tensor scale_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor q_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
     std::vector<double> time_vector;
-    int nx = x.size(0);
-    int nz = x.size(1);
-    int ny = qy.size(1);
+    long long int nx = x.size(0);
+    long long int nz = x.size(1);
+    long long int ny = qy.size(1);
 
     cudaDeviceSynchronize();
     clock_t time_quantize_start = clock();
@@ -495,7 +334,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     //     nx,nz,stride_x);
     // }));
     auto vec_norm = torch::cat({x1_len, x2_len});
-    int len_norm = vec_norm.numel();
+    long long int len_norm = vec_norm.numel();
 
     cudaDeviceSynchronize();
     clock_t time_leverage_end = clock();
@@ -526,7 +365,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
         while (whileloop && cnt < len_norm / 2){
             auto small_index = (norm_activation_loop < 1);
             auto small_value = norm_activation_loop.index({small_index});
-            int small_len = small_value.numel();
+            long long int small_len = small_value.numel();
             cnt = len_norm - small_len;
             norm_activation_loop = torch::clamp(norm_activation_loop, 0, 1);
             bool breakloop = (small_value.max() == 0).item<bool>();
@@ -550,12 +389,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     }
     auto small_indices = torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) == 1).squeeze(1);
     auto large_indices = torch::nonzero(sample_index.index({Slice(len_norm/2)}) == 1).squeeze(1);
+
+    norm_activation_loop.index_put_({norm_activation_loop == 0}, 1);
     // auto left_indices = (sample_index != 1);
 
     // norm_activation_loop.index_put_({norm_activation_loop == 0}, 1);
     // sample process
     dim3 grid2((nx*ny-1)/block.x+1);
-    int size = nx*ny;
+    long long int size = nx*ny;
 
     int small_num_ = small_indices.numel();
     int large_num_ = large_indices.numel();
@@ -571,9 +412,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     auto sample_x1_int4 = torch::empty({small_num_, nz>>1}, option_transform);
     auto sample_x2_int4 = torch::empty({large_num_, nz>>1}, option_transform);
     auto sample_y_int4 = torch::empty({ny, nz>>1}, option_transform);
-    int grid_size_x1 = nz*small_num_/2;
-    int grid_size_x2 = nz*large_num_/2;
-    int grid_size_y = nz*ny/2;
+    long long int grid_size_x1 = nz*small_num_/2;
+    long long int grid_size_x2 = nz*large_num_/2;
+    long long int grid_size_y = nz*ny/2;
     dim3 grid_pack_x1((grid_size_x1-1)/block.x+1);
     dim3 grid_pack_x2((grid_size_x2-1)/block.x+1);
     dim3 grid_pack_y((grid_size_y-1)/block.x+1);
@@ -635,14 +476,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // auto small_indices = left_indices.index({Slice({None, len_norm/2})});
     // auto large_indices = left_indices.index({Slice(len_norm/2)});
 
-    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "dequantize_cuda", ([&] {
-    // dequantize_cuda_kernel_fp16<scalar_t><<<grid2, block>>>(
-    //     gemm1.data_ptr<scalar_t>(), 
-    //     gemm2.data_ptr<scalar_t>(),
-    //     grad_output.data_ptr<scalar_t>(),
-    //     size);
-    // }));
-
 
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "dequantize_cuda", ([&] {
     // dequantize_cuda_kernel<scalar_t><<<grid2, block, N_THREADS * sizeof(float)>>>(
@@ -657,59 +490,25 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
         size, ny);
     }));
 
-    // auto Ind_small = torch::zeros_like(output_low);
-    // Ind_small.index_put_({small_indices,"..."}, 1);
-    // output_low = output_low.mul(Ind_small);
-    // auto Ind_large = torch::zeros_like(output_high);
-    // Ind_large.index_put_({large_indices,"..."}, 1);
-    // output_high = output_high.mul(Ind_large);
-
-    // AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "norm_cuda", ([&] {
-    // norm_cuda_kernel<scalar_t><<<grid2, block>>>(
-    //     norm_small.data_ptr<float>(),
-    //     norm_large.data_ptr<float>(),
-    //     output_low.data_ptr<scalar_t>(),
-    //     output_high.data_ptr<scalar_t>(),
-    //     grad_output.data_ptr<scalar_t>(),
-    //     size, ny);
-    // }));
-
     cudaDeviceSynchronize();
     clock_t time_dequantize_end = clock();
 
     // auto grad_output = output_low;
-    float grad_scale = 1.0 / sqrt(hadamard_activation.numel() * 7);
+    float grad_scale = 1.0 / sqrt(q_activation.numel() * 7);
     auto grad_alpha_out = torch::empty({nx,ny}, option_output);
     auto grad_input = torch::empty({nx,ny}, option_output);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_cuda", ([&] {
     LSQ_cuda_kernel<scalar_t><<<grid2, block>>>(
-        hadamard_activation.data_ptr<scalar_t>(), 
+        q_activation.data_ptr<int8_t>(), 
         grad_output.data_ptr<scalar_t>(),
         grad_alpha_out.data_ptr<scalar_t>(),
         grad_input.data_ptr<scalar_t>(),
-        scale_activation.item<float>(), grad_scale, size);
+        grad_scale, size);
     }));
 
-    // auto q_w = hadamard_activation / scale_activation;
-    // auto indicate_small = (q_w < -8).to(torch::kFloat16);
-    // auto indicate_big = (q_w > 7).to(torch::kFloat16);
-    // auto indicate_middle = 1.0 - indicate_small - indicate_big;
-    // auto grad_alpha = ((indicate_small * -8 + indicate_big * 7 + indicate_middle * (
-    //                 -q_w + q_w.round())) * grad_output * grad_scale).sum().unsqueeze(0);
-    // auto grad_input = indicate_middle * grad_output;
+    auto grad_alpha = grad_alpha_out.sum().unsqueeze(0);
     cudaDeviceSynchronize();
     clock_t time_LSQ_end = clock();
-    auto grad_alpha = grad_alpha_out.sum().unsqueeze(0);
-
-    // using namespace torch;
-    // torch::distributions::Gumbel gumbel_distribution(norm_activation, torch::ones_like(norm_activation));
-    // auto activation_phi = gumbel_distribution.rsample();
-
-    // auto activation_phi = norm_activation;
-    
-
-    // cudaDeviceSynchronize();
-    // clock_t time_LSS_end = clock();
 
 
     double quantize_time = (double)(time_quantize_end - time_quantize_start) / CLOCKS_PER_SEC;

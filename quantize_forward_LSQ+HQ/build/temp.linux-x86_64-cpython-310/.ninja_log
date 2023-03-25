@@ -1,3 +1,0 @@
-# ninja log v5
-0	15326	1677579694586400462	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_forward_LSQ+HQ/build/temp.linux-x86_64-cpython-310/quantize_forward_easy.o	2833993de082a70a
-0	54826	1677579734085991521	/home/ubuntu/lichangh20/Cuda_LSS_HQ/quantize_forward_LSQ+HQ/build/temp.linux-x86_64-cpython-310/quantize_forward_easy_kernel.o	504eceb795056713

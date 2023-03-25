@@ -1,7 +1,0 @@
-quantize_grad_weight_speed.cpp
-quantize_grad_weight_speed_kernel.cu
-setup.py
-quantize_grad_weight_speed.egg-info/PKG-INFO
-quantize_grad_weight_speed.egg-info/SOURCES.txt
-quantize_grad_weight_speed.egg-info/dependency_links.txt
-quantize_grad_weight_speed.egg-info/top_level.txt

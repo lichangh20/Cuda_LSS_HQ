@@ -1,7 +1,0 @@
-quantize_forward_easy.cpp
-quantize_forward_easy_kernel.cu
-setup_easy.py
-quantize_forward_easy.egg-info/PKG-INFO
-quantize_forward_easy.egg-info/SOURCES.txt
-quantize_forward_easy.egg-info/dependency_links.txt
-quantize_forward_easy.egg-info/top_level.txt

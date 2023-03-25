@@ -84,9 +84,17 @@ class PreconditionerTest:
         self.weight = torch.randn(mconfig.M, mconfig.N).cuda().half() / 50
         self.hadamard_weight = self.weight.view(-1, mconfig.group_size).matmul(self.hadamard).view(self.weight.shape)
         self.scale_weight = torch.randn(1).cuda().half()
+        self.quantize_weight = self.weight / self.scale_weight
+        self.quantize_weight.clamp_(-8.0, self.num_bins-8).round_()
+        self.quantize_weight = self.quantize_weight.to(torch.int8)
+        
+        
         self.input = torch.randn(mconfig.K, mconfig.N).cuda().half() / 50
         self.hadamard_input = self.input.view(-1, mconfig.group_size).matmul(self.hadamard).view(self.input.shape)
         self.scale_input = torch.randn(1).cuda().half()
+        self.quantize_input = self.input / self.scale_input
+        self.quantize_input.clamp_(-8.0, self.num_bins-8).round_()
+        self.quantize_input = self.quantize_input.to(torch.int8)
         
     def TwoLayerQuantizeInput_cuda_speed(self, input, inputList):
         total_time = 0
@@ -103,7 +111,7 @@ class PreconditionerTest:
             torch.cuda.synchronize()
             time1 = time.time()
             
-            activation_out = quantize_grad_input_speed.quantize(input, self.num_bits, self.quantize_yinput, self.scale_yinput, self.hadamard_input, self.scale_input, inputList[0], inputList[1], inputList[2], inputList[3],inputList[4])
+            activation_out = quantize_grad_input_speed.quantize(input, self.num_bits, self.quantize_yinput, self.scale_yinput, self.quantize_input, inputList[0], inputList[1], inputList[2], inputList[3],inputList[4])
             torch.cuda.synchronize()
             time2 = time.time()
             if i >= 1:
@@ -152,7 +160,7 @@ class PreconditionerTest:
             torch.cuda.synchronize()
             time1 = time.time()
 
-            weight_out = quantize_grad_weight_speed.quantize(input, self.num_bits, self.dequantize_y, self.quantize_y, self.scale_y, self.hadamard_weight, self.scale_weight)
+            weight_out = quantize_grad_weight_speed.quantize(input, self.num_bits, self.quantize_y, self.scale_y, self.quantize_weight)
             # assert torch.isnan(weight_out[0]).sum() == 0
             torch.cuda.synchronize()
             time2 = time.time()
@@ -257,7 +265,18 @@ class PreconditionerTest:
         # print(x.shape[1])
         hadamard_cuda_speed_tflops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         
-         
+def write_flops():
+    with open("./image/flops.txt", "w") as f:
+        for index in range(len(matrix_shape)):
+            print("matrix shape is:", matrix_shape[index], file=f)
+            print("    fp16 flops is:", python_ordgemm_flops[index], file=f)
+            print("    HQ flops is:", hadamard_cuda_speed_tflops[index], file=f)
+            print("    LssWeight flops is:", twolayer_cuda_speed_tflops[index], file=f)
+            print("    LssInput flops is:", twolayerInput_cuda_speed_tflops[index], file=f)
+            print("    LssAverage flops is:", (twolayerInput_cuda_speed_tflops[index] + twolayer_cuda_speed_tflops[index])/2, file=f)
+            print("", file=f)
+            
+            
 def draw_picture_flops():
     plt.figure(figsize=(25, 20))
     bar_width = 0.17
@@ -367,7 +386,8 @@ def draw_picture_full2():
     
 if __name__=="__main__":
     # ,(15360,8704,10752), (),,(35840,35840,43520)
-    for (m,n,k) in [(25600,25600,32768),(28672,28672,34816),(30720,30720,46080),(32768,32768,38912)]:
+    # for (m,n,k) in [(25600,25600,32768),(28672,28672,34816),(30720,30720,46080),(32768,32768,38912)]:
+    for (m,n,k) in [(4608,5120,6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
         print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
         mconfig.M = m
         mconfig.N = n
@@ -380,5 +400,6 @@ if __name__=="__main__":
         test.TwoLayerQuantizeInput_cuda_speed(test.x, returnList)
 
     draw_picture_flops()
+    write_flops()
     draw_picture_full()
     draw_picture_full2()

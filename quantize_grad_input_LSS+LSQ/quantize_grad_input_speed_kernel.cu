@@ -357,8 +357,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // clock_t time_sample1_end = clock();
 
     // TODO:change back
-    // if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
-    if (true) {
+    if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
+    // if (true) {
         norm_activation_loop.index_put_({norm_activation_loop > 0}, 1);
     } else {
         bool whileloop = (norm_activation_loop.max() > 1).item<bool>();

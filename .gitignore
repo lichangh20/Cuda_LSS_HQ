@@ -1,0 +1,12 @@
+# 忽略一些没有必要的文件
+/quantize_forward_LSQ+HQ/build/*
+/quantize_forward_LSQ+HQ/dist/*
+/quantize_forward_LSQ+HQ/quantize_forward_easy.egg-info/*
+
+/quantize_grad_input_LSS+LSQ/build/*
+/quantize_grad_input_LSS+LSQ/dist/*
+/quantize_grad_input_LSS+LSQ/quantize_grad_input_speed.egg-info/*
+
+/quantize_grad_weight_LSS+LSQ/build/*
+/quantize_grad_weight_LSS+LSQ/dist/*
+/quantize_grad_weight_LSS+LSQ/quantize_grad_weight_speed.egg-info/*

@@ -441,8 +441,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     }));
     auto sample_index = norm_weight_loop;
     int posNum = (norm_weight_loop > 0).sum().item<int>();
-    // if (posNum < len_norm / 2){
-    if (true) {
+    if (posNum < len_norm / 2){
+    // if (true) {
         cnt = posNum;
         norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
         flag = 2;
@@ -533,11 +533,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         auto sample_x2 = second_transform.index({large_int_indices}).t().contiguous();
         auto sample_y1 = qy.index({small_int_indices}).t().contiguous();
         auto sample_y2 = qy.index({large_int_indices}).t().contiguous();
-        auto sample_x3 = (first_transform.index({small_left_indices}).t() * num_bins_half / (scale1 * norm_weight_loop.index({small_left_indices}))).to(torch::kFloat16);
-        auto sample_x4 = (second_transform.index({large_left_indices}).t() / (scale1 * norm_weight_loop.index({large_left_indices + len_norm / 2}))).to(torch::kFloat16);
+        auto sample_x3 = (first_transform.index({small_left_indices}).t() * num_bins_half / (scale1 * norm_weight_loop.index({small_left_indices}))).to(x.dtype());
+        auto sample_x4 = (second_transform.index({large_left_indices}).t() / (scale1 * norm_weight_loop.index({large_left_indices + len_norm / 2}))).to(x.dtype());
         //todo:currently multiply a scaley to convert it into fp16
-        auto sample_y3 = (qy.index({small_left_indices}) * scaley).to(torch::kFloat16);
-        auto sample_y4 = (qy.index({large_left_indices}) * scaley).to(torch::kFloat16);
+        auto sample_y3 = (qy.index({small_left_indices}) * scaley).to(x.dtype());
+        auto sample_y4 = (qy.index({large_left_indices}) * scaley).to(x.dtype());
 
         cudaDeviceSynchronize();
         time_sample_end = clock();

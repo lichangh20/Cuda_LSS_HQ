@@ -7,7 +7,7 @@ setup(
         CUDAExtension(name='quantize_grad_input_speed', sources=[
             'quantize_grad_input_speed.cpp',
             'quantize_grad_input_speed_kernel.cu',
-        ], include_dirs=["../cutlass-feature-2.10-updates_before_tagging/include"],
+        ], include_dirs=["../cutlass/include"],
         extra_compile_args=["-std=c++17"])
     ],
     cmdclass={

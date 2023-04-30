@@ -19,7 +19,7 @@
 #define N_THREADS 256
 
 template<typename scalar_t>
-__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO, const float scale, long long int size){
+__global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t * MatO, scalar_t * __restrict__  MatLSQ, const float scale, long long int size){
     long long int x = threadIdx.x + blockIdx.x * blockDim.x;
     if (x<size){
         //TODO: Method 2
@@ -27,8 +27,10 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
         // int temp2 = temp1;
         // int bias = (temp1 - temp2) * 2;
         // MatO[x] = std::clamp(temp2 + bias, -8, 7);
-        float tmp = round(MatI[x] / scale);
-        MatO[x] = std::clamp((int)(tmp), -8, 7);
+        float temp = MatI[x] / scale;
+        // float tmp = round(MatI[x] / scale);
+        MatLSQ[x] = temp;
+        MatO[x] = std::clamp((int)(round(temp)), -8, 7);
     }
 }
 
@@ -150,7 +152,7 @@ __global__ void dequantize_cuda_kernel(const int32_t * gemm, scalar_t * __restri
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, long long int> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, long long int> quantize_cuda(torch::Tensor hx, torch::Tensor hy, float scale_x, float scale_y){
     std::vector<double> time_vector;
     cudaError_t result;
     //TODO: remember that input y is transposed
@@ -160,6 +162,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     //TODO: divide hadmard matrix by scale + convert data
     auto option_quantize = torch::TensorOptions().dtype(torch::kInt8).device(hx.device());
+    auto option_gemm = torch::TensorOptions().dtype(torch::kInt32).device(hx.device());
+    auto option_dequantize = torch::TensorOptions().dtype(hx.dtype()).device(hx.device());
     dim3 block(N_THREADS);
 
     cudaDeviceSynchronize();
@@ -167,12 +171,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     dim3 grid1((nx*nz-1)/(block.x)+1);
     torch::Tensor q_x = torch::empty({nx,nz}, option_quantize);
+    torch::Tensor lsq_x = torch::empty({nx,nz}, option_dequantize);
     long long int hx_size = (nx*nz);
     // process of quantize
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(hx.scalar_type(), "quantize_cuda", ([&] {
     quantize_cuda_kernel<scalar_t><<<grid1, block>>>(
         hx.data_ptr<scalar_t>(),
         q_x.data_ptr<int8_t>(),
+        lsq_x.data_ptr<scalar_t>(),
         scale_x,hx_size);
     }));
 
@@ -181,11 +187,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     dim3 grid2((ny*nz-1)/(block.x)+1);
     torch::Tensor q_y = torch::empty({ny,nz}, option_quantize);
+    torch::Tensor lsq_y = torch::empty({ny,nz}, option_dequantize);
     long long int hy_size = (ny*nz);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(hy.scalar_type(), "quantize_cuda", ([&] {
     quantize_cuda_kernel<scalar_t><<<grid2, block>>>(
         hy.data_ptr<scalar_t>(),
         q_y.data_ptr<int8_t>(),
+        lsq_y.data_ptr<scalar_t>(),
         scale_y,hy_size);
     }));
 
@@ -212,7 +220,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     int lda = nz;
     int ldb = nz;
     int ldc = ny;
-    auto option_gemm = torch::TensorOptions().dtype(torch::kInt32).device(hx.device());
     torch::Tensor gemm = torch::empty({nx, ny}, option_gemm);
     result = CutlassSgemmNN(nx, ny, nz, reinterpret_cast<cutlass::int4b_t *>(pack_qx.data_ptr<int8_t>()), lda, 
             reinterpret_cast<cutlass::int4b_t *>(pack_qy.data_ptr<int8_t>()), ldb, gemm.data_ptr<int32_t>(), ldc);
@@ -222,7 +229,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
 
     //TODO:Final dequantize
     dim3 grid3((nx*ny-1)/block.x+1);
-    auto option_dequantize = torch::TensorOptions().dtype(hx.dtype()).device(hx.device());
     torch::Tensor output = torch::empty({nx, ny}, option_dequantize);
     float scale = scale_x * scale_y;
     long long int size = nx * ny;
@@ -249,5 +255,5 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     time_vector.push_back(dequantize_time);
  
     // return output;
-    return std::make_tuple(output, q_x, q_y, time_vector, gemm, size);
+    return std::make_tuple(output, q_x, q_y, lsq_x, lsq_y, time_vector, gemm, size);
 }

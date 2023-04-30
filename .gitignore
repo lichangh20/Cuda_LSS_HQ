@@ -10,3 +10,5 @@
 /quantize_grad_weight_LSS+LSQ/build/*
 /quantize_grad_weight_LSS+LSQ/dist/*
 /quantize_grad_weight_LSS+LSQ/quantize_grad_weight_speed.egg-info/*
+
+*/image/

@@ -190,12 +190,12 @@ __global__ void dequantize2_cuda_kernel(const int32_t * gemm1, const int32_t * g
 }
 
 template<typename scalar_t>
-__global__ void LSQ_cuda_kernel(const int8_t * q_weight, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
+__global__ void LSQ_cuda_kernel(const scalar_t * lsq_weight, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
                                 scalar_t * __restrict__ grad_input, const float grad_scale, const long long int size){  
     long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
-       scalar_t q_w = q_weight[x];
+       scalar_t q_w = lsq_weight[x];
        scalar_t indicate_small = (q_w < -8);
        scalar_t indicate_big = (q_w > 7);
        scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
@@ -316,7 +316,7 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, float> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor q_weight){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, float> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_weight){
     std::vector<double> time_vector;
     long long int nz = x.size(0);
     long long int nx = x.size(1);
@@ -441,8 +441,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     }));
     auto sample_index = norm_weight_loop;
     int posNum = (norm_weight_loop > 0).sum().item<int>();
-    if (posNum < len_norm / 2){
-    // if (true) {
+    // if (posNum < len_norm / 2){
+    if (true) {
         cnt = posNum;
         norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
         flag = 2;
@@ -806,12 +806,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
     //     size);
     // }));
 
-    float grad_scale = 1.0 / sqrt(q_weight.numel() * 7);
+    float grad_scale = 1.0 / sqrt(lsq_weight.numel() * 7);
     auto grad_alpha_out = torch::empty({nx,ny}, option_output);
     auto grad_input = torch::empty({nx,ny}, option_output);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_cuda", ([&] {
     LSQ_cuda_kernel<scalar_t><<<grid2, block>>>(
-        q_weight.data_ptr<int8_t>(), 
+        lsq_weight.data_ptr<scalar_t>(), 
         grad_output.data_ptr<scalar_t>(),
         grad_alpha_out.data_ptr<scalar_t>(),
         grad_input.data_ptr<scalar_t>(),

@@ -203,12 +203,12 @@ __global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __r
 }
 
 template<typename scalar_t>
-__global__ void LSQ_cuda_kernel(const int8_t * q_activation, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
+__global__ void LSQ_cuda_kernel(const scalar_t * lsq_activation, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
                                 scalar_t * __restrict__ grad_input, const float grad_scale, const long long int size){  
     long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
-       scalar_t q_w = q_activation[x];
+       scalar_t q_w = lsq_activation[x];
        scalar_t indicate_small = (q_w < -8);
        scalar_t indicate_big = (q_w > 7);
        scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
@@ -250,7 +250,7 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor q_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
     std::vector<double> time_vector;
     long long int nx = x.size(0);
     long long int nz = x.size(1);
@@ -263,7 +263,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     auto option_quantize = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     auto option_float = torch::TensorOptions().dtype(torch::kFloat32).device(x.device());
     auto option_int = torch::TensorOptions().dtype(torch::kInt32).device(x.device());
-    auto option_output = torch::TensorOptions().dtype(torch::kFloat16).device(x.device());
+    auto option_output = torch::TensorOptions().dtype(x.dtype()).device(x.device());
     // torch::Tensor first_transform = torch::empty({nx, nz}, option_transform);
     // torch::Tensor first_quantize = torch::empty({nx, nz}, option_quantize);
     // torch::Tensor second_transform = torch::empty({nx, nz}, option_transform);
@@ -357,8 +357,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // clock_t time_sample1_end = clock();
 
     // TODO:change back
-    if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
-    // if (true) {
+    // if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
+    if (true) {
         norm_activation_loop.index_put_({norm_activation_loop > 0}, 1);
     } else {
         bool whileloop = (norm_activation_loop.max() > 1).item<bool>();
@@ -494,12 +494,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     clock_t time_dequantize_end = clock();
 
     // auto grad_output = output_low;
-    float grad_scale = 1.0 / sqrt(q_activation.numel() * 7);
+    float grad_scale = 1.0 / sqrt(lsq_activation.numel() * 7);
     auto grad_alpha_out = torch::empty({nx,ny}, option_output);
     auto grad_input = torch::empty({nx,ny}, option_output);
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_cuda", ([&] {
     LSQ_cuda_kernel<scalar_t><<<grid2, block>>>(
-        q_activation.data_ptr<int8_t>(), 
+        lsq_activation.data_ptr<scalar_t>(), 
         grad_output.data_ptr<scalar_t>(),
         grad_alpha_out.data_ptr<scalar_t>(),
         grad_input.data_ptr<scalar_t>(),

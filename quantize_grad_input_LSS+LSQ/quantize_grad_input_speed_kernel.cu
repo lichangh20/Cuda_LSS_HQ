@@ -251,6 +251,7 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
+// std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation){
     std::vector<double> time_vector;
     long long int nx = x.size(0);
     long long int nz = x.size(1);
@@ -303,7 +304,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     // TODO: use dim=0 because torch.linalg only supports dim=1
     // int threads = 32;
     // int blocks = nx;
-    // auto x_sample = torch::cat({first_quantize, second_quantize}, 0);
+    // // auto x_sample = torch::cat({first_quantize, second_quantize}, 0);
     // auto x1_len = torch::empty({nx,}, option_float);
     // auto x2_len = torch::empty({nx,}, option_float);
 
@@ -351,15 +352,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
         norm_activation_loop.data_ptr<scalar_t>(),
         scale_norm,len_norm);
     }));
-    auto sample_index = norm_activation_loop;
+    auto sample_index = torch::empty_like(norm_activation_loop);
     // int posNum = (norm_weight_loop > 0).sum().item<int>();
     // cudaDeviceSynchronize();
     // clock_t time_sample1_end = clock();
 
     // TODO:change back
     // if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
-    if (true) {
+    // if (true) {
+    if (false) {
         norm_activation_loop.index_put_({norm_activation_loop > 0}, 1);
+        sample_index = norm_activation_loop;
     } else {
         bool whileloop = (norm_activation_loop.max() > 1).item<bool>();
         while (whileloop && cnt < len_norm / 2){

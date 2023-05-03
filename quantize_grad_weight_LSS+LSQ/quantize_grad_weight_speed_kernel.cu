@@ -439,12 +439,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         norm_weight_loop.data_ptr<scalar_t>(),
         scale_norm,len_norm);
     }));
-    auto sample_index = norm_weight_loop;
+    auto sample_index = torch::empty_like(norm_weight_loop);
     int posNum = (norm_weight_loop > 0).sum().item<int>();
     // if (posNum < len_norm / 2){
     if (true) {
+    // if (false) {
         cnt = posNum;
         norm_weight_loop.index_put_({norm_weight_loop > 0}, 1);
+        sample_index = norm_weight_loop;
         flag = 2;
     }else{
         bool whileloop = (norm_weight_loop.max() > 1).item<bool>();
@@ -638,7 +640,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
         time_dequantize_end = clock();
 
     } else if (flag == 2){
-        if (cnt > 800){
+        // if (cnt > 800){
+        if (false) {
             small_num_ = floor(small_indices.numel() / 32.0) * 32;
             large_num_ = floor(large_indices.numel() / 32.0) * 32;
 

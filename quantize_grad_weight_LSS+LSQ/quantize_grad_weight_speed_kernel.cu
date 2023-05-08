@@ -748,8 +748,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             // auto sample_y1 = qy.index({small_indices}).t().contiguous();
             // auto sample_y2 = qy.index({large_indices}).t().contiguous();
 
-            // std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
-            // std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
+            std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
+            std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
 
             torch::nn::ZeroPad2d pad_small(padding_small);
             torch::nn::ZeroPad2d pad_large(padding_large);

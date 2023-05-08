@@ -359,8 +359,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
 
     // TODO:change back
     // if ((norm_activation_loop > 0).sum().item<int>() < len_norm / 2){
-    // if (true) {
-    if (false) {
+    if (true) {
+    // if (false) {
         norm_activation_loop.index_put_({norm_activation_loop > 0}, 1);
         sample_index = norm_activation_loop;
     } else {

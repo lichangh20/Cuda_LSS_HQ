@@ -84,17 +84,13 @@ class PreconditionerTest:
         self.weight = torch.randn(mconfig.M, mconfig.N).cuda().half() / 50
         self.hadamard_weight = self.weight.view(-1, mconfig.group_size).matmul(self.hadamard).view(self.weight.shape)
         self.scale_weight = torch.randn(1).cuda().half()
-        self.quantize_weight = self.weight / self.scale_weight
-        self.quantize_weight.clamp_(-8.0, self.num_bins-8).round_()
-        self.quantize_weight = self.quantize_weight.to(torch.int8)
+        self.lsq_weight = self.weight / self.scale_weight
         
         
         self.input = torch.randn(mconfig.K, mconfig.N).cuda().half() / 50
         self.hadamard_input = self.input.view(-1, mconfig.group_size).matmul(self.hadamard).view(self.input.shape)
         self.scale_input = torch.randn(1).cuda().half()
-        self.quantize_input = self.input / self.scale_input
-        self.quantize_input.clamp_(-8.0, self.num_bins-8).round_()
-        self.quantize_input = self.quantize_input.to(torch.int8)
+        self.lsq_input = self.input / self.scale_input
         
     def TwoLayerQuantizeInput_cuda_speed(self, input, inputList):
         total_time = 0
@@ -111,7 +107,7 @@ class PreconditionerTest:
             torch.cuda.synchronize()
             time1 = time.time()
             
-            activation_out = quantize_grad_input_speed.quantize(input, self.num_bits, self.quantize_yinput, self.scale_yinput, self.quantize_input, inputList[0], inputList[1], inputList[2], inputList[3],inputList[4])
+            activation_out = quantize_grad_input_speed.quantize(input, self.num_bits, self.quantize_yinput, self.scale_yinput, self.lsq_input, inputList[0], inputList[1], inputList[2], inputList[3],inputList[4])
             torch.cuda.synchronize()
             time2 = time.time()
             if i >= 1:
@@ -122,8 +118,7 @@ class PreconditionerTest:
                 gemm_time += activation_out[4][4]
                 dequantize_time += activation_out[4][5]
                 LSQ_time += activation_out[4][6]
-                for i in range(7):
-                    total_time += activation_out[4][i]
+                total_time += time2 - time1
                 
         
         print("quantize cuda speed:")
@@ -160,7 +155,7 @@ class PreconditionerTest:
             torch.cuda.synchronize()
             time1 = time.time()
 
-            weight_out = quantize_grad_weight_speed.quantize(input, self.num_bits, self.quantize_y, self.scale_y, self.quantize_weight)
+            weight_out = quantize_grad_weight_speed.quantize(input, self.num_bits, self.quantize_y, self.scale_y, self.lsq_weight)
             # assert torch.isnan(weight_out[0]).sum() == 0
             torch.cuda.synchronize()
             time2 = time.time()
@@ -350,8 +345,8 @@ def draw_picture_full2():
     area.plot()
     bar_width = 0.6
     
-    data = [np.array(cuda_input_quantize_time), cuda_input_leverage_time, np.array(cuda_input_sample_time), cuda_input_pack_time, cuda_input_gemm_time, cuda_input_dequantize_time, cuda_input_LSQ_time]
-    labels = ["quantize", "leverage", "sample", "pack", "gemm", "dequantize", "LSQ"]
+    data = [np.array(cuda_input_sample_time), cuda_input_pack_time, cuda_input_gemm_time, cuda_input_dequantize_time, cuda_input_LSQ_time]
+    labels = ["sample", "pack", "gemm", "dequantize", "LSQ"]
         
     r1 = range(len(matrix_shape))
     

@@ -78,10 +78,10 @@ class PreconditionerTest:
             time2 = time.time()
             if i>= 1:
                 hadamard_time += time_flag - time1
-                quantize_time += out2[3][0]
-                pack_time += out2[3][1]
-                gemm_time += out2[3][2]
-                dequantize_time += out2[3][3]
+                quantize_time += out2[5][0]
+                pack_time += out2[5][1]
+                gemm_time += out2[5][2]
+                dequantize_time += out2[5][3]
                 total_time += time2 - time1
         print("HQ cuda MM speed:")
         print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)

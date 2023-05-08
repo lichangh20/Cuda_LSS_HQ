@@ -721,8 +721,35 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, tor
             small_num_ = ceil(small_indices.numel() / 32.0) * 32;
             large_num_ = ceil(large_indices.numel() / 32.0) * 32;
 
-            std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
-            std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
+            // int small_pad = small_num_ - small_indices.numel();
+            // if (small_pad > 0) {
+            //     auto small_pad_indices = (torch::nonzero(sample_index.index({Slice({None, len_norm/2})}) != 1).squeeze(1)).index({Slice({None, small_pad})});
+            //     if (small_pad_indices.numel() < small_pad) exit(0);
+            //     small_indices = torch::cat({small_indices, small_pad_indices}, 0);
+            // }
+            // int large_pad = large_num_ - large_indices.numel();
+            // if (large_pad > 0) {
+            //     auto large_pad_indices = (torch::nonzero(sample_index.index({Slice(len_norm/2)}) != 1).squeeze(1)).index({Slice({None, large_pad})}); 
+            //     if (large_pad_indices.numel() < large_pad) exit(0);
+            //     large_indices = torch::cat({large_indices, large_pad_indices}, 0);
+            // }
+            
+
+            // // std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
+            // // std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
+
+            // // torch::nn::ZeroPad2d pad_small(padding_small);
+            // // torch::nn::ZeroPad2d pad_large(padding_large);
+            // cudaDeviceSynchronize();
+            // time_sampleflag_end = clock();
+
+            // auto sample_x1 = first_transform.index({small_indices}).t().contiguous();
+            // auto sample_x2 = second_transform.index({large_indices}).t().contiguous();
+            // auto sample_y1 = qy.index({small_indices}).t().contiguous();
+            // auto sample_y2 = qy.index({large_indices}).t().contiguous();
+
+            // std::vector<int64_t> padding_small = {0,0,0,small_num_ - small_indices.numel()};
+            // std::vector<int64_t> padding_large = {0,0,0,large_num_ - large_indices.numel()};
 
             torch::nn::ZeroPad2d pad_small(padding_small);
             torch::nn::ZeroPad2d pad_large(padding_large);

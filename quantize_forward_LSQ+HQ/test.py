@@ -104,6 +104,7 @@ def draw_picture_full():
     
     data = [cuda_hadamard_time, np.array(cuda_quantize_time), cuda_pack_time, cuda_gemm_time, cuda_dequantize_time]
     labels = ["hadamard", "quantize", "pack", "gemm", "dequantize"]
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
         
     r1 = range(len(matrix_shape))
     
@@ -113,7 +114,7 @@ def draw_picture_full():
     
     for index in range(len(data)):
         y = data[index] / sums
-        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y)
+        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y, color=colors[index])
         bottom_y += y
         
     for i in range(data.shape[1]):
@@ -121,18 +122,22 @@ def draw_picture_full():
         for j in range(data.shape[0]):
             y = data[j][i] / sums[i]
             text = "%d%%" % (100 * y)
-            plt.text(r1[i], tmp_y+y/2,text,color='white',size='36',horizontalalignment='center',verticalalignment='center')
+            plt.text(r1[i], tmp_y+y/2,text,color='white',size='40',horizontalalignment='center',verticalalignment='center')
             tmp_y += y
     
-    plt.xticks(r1, matrix_shape, rotation=30, fontsize=30)
+    plt.xticks(r1, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)
 
-    plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
+    # TODO: how to change legend place?
+    # plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=50)
+    # plt.legend(loc='upper center', bbox_to_anchor=(1,1), ncol=5, fontsize=45)
 
+    plt.title("HQ", fontdict={'size' : 60})
     plt.ylabel('Time ratio', fontdict={'size' : 60})
     plt.xlabel("Matrix size (M,N,K)", fontdict={'size' : 60})
 
-    plt.savefig('./image/plot_time.pdf', bbox_inches='tight')
+    plt.savefig('./image/HQ.svg', bbox_inches='tight', format='svg')
+    # plt.savefig('./image/HQ.pdf', bbox_inches='tight')
     
 if __name__=="__main__":
     

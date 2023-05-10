@@ -288,7 +288,7 @@ def draw_picture_flops():
     plt.bar(r4, (np.array(twolayer_cuda_speed_tflops) + np.array(twolayerInput_cuda_speed_tflops))/2, width=bar_width, edgecolor='white', label='LssAverage')
     plt.bar(r5, hadamard_cuda_speed_tflops, width=bar_width, edgecolor='white', label='HQ')
     
-    plt.xticks(r2, matrix_shape, rotation=30, fontsize=30)
+    plt.xticks(r2, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)
     
     plt.legend(loc='upper left', fontsize=60)
@@ -299,6 +299,7 @@ def draw_picture_flops():
     # plt.title('Comparison of FP16 MM, HQ and LSS operator',fontsize=60)
     
     plt.savefig('./image/plot_flops.pdf', bbox_inches='tight')
+    plt.savefig('./image/plot_flops.svg', bbox_inches='tight', format='svg')
     
 def draw_picture_full():
     plt.figure(figsize=(20, 20))
@@ -308,6 +309,7 @@ def draw_picture_full():
     
     data = [np.array(cuda_quantize_time), cuda_leverage_time, np.array(cuda_sample_time), cuda_pack_time, cuda_gemm_time, cuda_dequantize_time, cuda_LSQ_time]
     labels = ["quantize", "leverage", "sample", "pack", "gemm", "dequantize", "LSQ"]
+    colors = ['#ff7f0e', '#8c564b', '#e377c2', '#2ca02c', '#d62728', '#9467bd', '#7f7f7f']
         
     r1 = range(len(matrix_shape))
     
@@ -317,7 +319,7 @@ def draw_picture_full():
     
     for index in range(len(data)):
         y = data[index] / sums
-        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y)
+        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y, color=colors[index])
         bottom_y += y
         
     for i in range(data.shape[1]):
@@ -325,19 +327,20 @@ def draw_picture_full():
         for j in range(data.shape[0]):
             y = data[j][i] / sums[i]
             text = "%d%%" % (100 * y)
-            plt.text(r1[i], tmp_y+y/2, text, color='white',size='36',horizontalalignment='center',verticalalignment='center')
+            plt.text(r1[i], tmp_y+y/2, text, color='white',size='40',horizontalalignment='center',verticalalignment='center')
             tmp_y += y
     
-    plt.xticks(r1, matrix_shape, rotation=30, fontsize=30)
+    plt.xticks(r1, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)
 
-    plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
+    # plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
 
     plt.title("LssWeight", fontdict={'size' : 60})
     plt.ylabel('Time ratio', fontdict={'size' : 60})
     plt.xlabel("Matrix size (M,N,K)", fontdict={'size' : 60})
 
-    plt.savefig('./image/plot_time.pdf', bbox_inches='tight')
+    # plt.savefig('./image/LssWeight.pdf', bbox_inches='tight')
+    plt.savefig('./image/LssWeight.svg', bbox_inches='tight', format='svg')
     
 def draw_picture_full2():
     plt.figure(figsize=(20, 20))
@@ -347,6 +350,7 @@ def draw_picture_full2():
     
     data = [np.array(cuda_input_sample_time), cuda_input_pack_time, cuda_input_gemm_time, cuda_input_dequantize_time, cuda_input_LSQ_time]
     labels = ["sample", "pack", "gemm", "dequantize", "LSQ"]
+    colors = ['#e377c2', '#2ca02c', '#d62728', '#9467bd', '#7f7f7f']
         
     r1 = range(len(matrix_shape))
     
@@ -357,7 +361,7 @@ def draw_picture_full2():
     
     for index in range(len(data)):
         y = data[index] / sums
-        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y)
+        plt.bar(r1, y, width=bar_width, edgecolor='white', label=labels[index], bottom=bottom_y, color=colors[index])
         bottom_y += y
         
     for i in range(data.shape[1]):
@@ -368,16 +372,17 @@ def draw_picture_full2():
             plt.text(r1[i], tmp_y+y/2, text, color='white',size='36',horizontalalignment='center',verticalalignment='center')
             tmp_y += y
     
-    plt.xticks(r1, matrix_shape, rotation=30, fontsize=30)
+    plt.xticks(r1, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)
 
-    plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
+    # plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
 
     plt.title("LssInput", fontdict={'size' : 60})
     plt.ylabel('Time ratio', fontdict={'size' : 60})
     plt.xlabel("Matrix size (M,N,K)", fontdict={'size' : 60})
 
-    plt.savefig('./image/plot_time2.pdf', bbox_inches='tight')
+    # plt.savefig('./image/LSSInput.pdf', bbox_inches='tight')
+    plt.savefig('./image/LSSInput.svg', bbox_inches='tight', format='svg')
     
 if __name__=="__main__":
     # ,(15360,8704,10752), (),,(35840,35840,43520)

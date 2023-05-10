@@ -268,7 +268,7 @@ def write_flops():
             print("    HQ flops is:", hadamard_cuda_speed_tflops[index], file=f)
             print("    LssWeight flops is:", twolayer_cuda_speed_tflops[index], file=f)
             print("    LssInput flops is:", twolayerInput_cuda_speed_tflops[index], file=f)
-            print("    LssAverage flops is:", (twolayerInput_cuda_speed_tflops[index] + twolayer_cuda_speed_tflops[index])/2, file=f)
+            print("    LssAverage flops is:", 3/(1/twolayerInput_cuda_speed_tflops[index] + 1/twolayer_cuda_speed_tflops[index] + 1/hadamard_cuda_speed_tflops[index]), file=f)
             print("", file=f)
             
             
@@ -285,7 +285,7 @@ def draw_picture_flops():
     plt.bar(r1, python_ordgemm_flops, width=bar_width, edgecolor='white', label='fp16')
     plt.bar(r2, twolayer_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LssWeight')
     plt.bar(r3, twolayerInput_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LssInput')
-    plt.bar(r4, (np.array(twolayer_cuda_speed_tflops) + np.array(twolayerInput_cuda_speed_tflops))/2, width=bar_width, edgecolor='white', label='LssAverage')
+    plt.bar(r4, 3/(1/np.array(twolayer_cuda_speed_tflops) + 1/np.array(twolayerInput_cuda_speed_tflops) + 1/np.array(hadamard_cuda_speed_tflops)), width=bar_width, edgecolor='white', label='Average')
     plt.bar(r5, hadamard_cuda_speed_tflops, width=bar_width, edgecolor='white', label='HQ')
     
     plt.xticks(r2, matrix_shape, rotation=30, fontsize=45)

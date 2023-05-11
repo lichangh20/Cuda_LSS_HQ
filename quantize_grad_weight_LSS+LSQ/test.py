@@ -268,7 +268,7 @@ def write_flops():
             print("    HQ flops is:", hadamard_cuda_speed_tflops[index], file=f)
             print("    LssWeight flops is:", twolayer_cuda_speed_tflops[index], file=f)
             print("    LssInput flops is:", twolayerInput_cuda_speed_tflops[index], file=f)
-            print("    LssAverage flops is:", 3/(1/twolayerInput_cuda_speed_tflops[index] + 1/twolayer_cuda_speed_tflops[index] + 1/hadamard_cuda_speed_tflops[index]), file=f)
+            print("    Average flops is:", 3/(1/twolayerInput_cuda_speed_tflops[index] + 1/twolayer_cuda_speed_tflops[index] + 1/hadamard_cuda_speed_tflops[index]), file=f)
             print("", file=f)
             
             
@@ -282,11 +282,11 @@ def draw_picture_flops():
     r4 = [x + bar_width for x in r3]
     r5 = [x + bar_width for x in r4]
     
-    plt.bar(r1, python_ordgemm_flops, width=bar_width, edgecolor='white', label='fp16')
-    plt.bar(r2, twolayer_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LssWeight')
-    plt.bar(r3, twolayerInput_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LssInput')
-    plt.bar(r4, 3/(1/np.array(twolayer_cuda_speed_tflops) + 1/np.array(twolayerInput_cuda_speed_tflops) + 1/np.array(hadamard_cuda_speed_tflops)), width=bar_width, edgecolor='white', label='Average')
-    plt.bar(r5, hadamard_cuda_speed_tflops, width=bar_width, edgecolor='white', label='HQ')
+    plt.bar(r1, python_ordgemm_flops, width=bar_width, edgecolor='white', label='FP16')
+    plt.bar(r2, 3/(1/np.array(twolayer_cuda_speed_tflops) + 1/np.array(twolayerInput_cuda_speed_tflops) + 1/np.array(hadamard_cuda_speed_tflops)), width=bar_width, edgecolor='white', label='INT4')
+    plt.bar(r3, hadamard_cuda_speed_tflops, width=bar_width, edgecolor='white', label='HQ')
+    plt.bar(r4, twolayer_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LSSWeight')
+    plt.bar(r5, twolayerInput_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LSSAct')
     
     plt.xticks(r2, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)

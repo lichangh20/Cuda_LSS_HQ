@@ -335,7 +335,7 @@ def draw_picture_full():
 
     # plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
 
-    plt.title("LssWeight", fontdict={'size' : 60})
+    plt.title("LSSWeight", fontdict={'size' : 60})
     plt.ylabel('Time ratio', fontdict={'size' : 60})
     plt.xlabel("Matrix size (M,N,K)", fontdict={'size' : 60})
 
@@ -377,7 +377,7 @@ def draw_picture_full2():
 
     # plt.legend(loc='upper left', bbox_to_anchor=(1,1), ncol=1, fontsize=45)
 
-    plt.title("LssInput", fontdict={'size' : 60})
+    plt.title("LSSAct", fontdict={'size' : 60})
     plt.ylabel('Time ratio', fontdict={'size' : 60})
     plt.xlabel("Matrix size (M,N,K)", fontdict={'size' : 60})
 

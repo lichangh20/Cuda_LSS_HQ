@@ -49,6 +49,14 @@ __global__ void pack_cuda_kernel(int8_t * in, int8_t * out, long long int size){
     }
 }
 
+__global__ void unpack_cuda_kernel(int8_t * in, int8_t * out, long long int size){
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
+    if (x<size){
+        out[(x<<1)+1] = in[x] >> 4;
+        out[x<<1] = (in[x] & 15) << 4 >> 4;
+    }
+}
+
 /// Define a CUTLASS GEMM template and launch a GEMM kernel.
 cudaError_t CutlassSgemmNN(
   const int M,
@@ -203,18 +211,31 @@ __global__ void multiple_kernel(const scalar_t * __restrict__ in, scalar_t * __r
 }
 
 template<typename scalar_t>
-__global__ void LSQ_cuda_kernel(const scalar_t * lsq_activation, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
-                                scalar_t * __restrict__ grad_input, const float grad_scale, const long long int size){  
+__global__ void LSQ_scale_cuda_kernel(const scalar_t * lsq_weight, const scalar_t * __restrict__ grad_output, scalar_t * __restrict__ grad_alpha_out, 
+                                const float grad_scale, const long long int size){  
     long long int x = threadIdx.x + blockIdx.x * blockDim.x;
 
     if (x<size){
-       scalar_t q_w = lsq_activation[x];
+       scalar_t q_w = lsq_weight[x];
        scalar_t indicate_small = (q_w < -8);
        scalar_t indicate_big = (q_w > 7);
        scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
        scalar_t grad_out = grad_output[x];
        grad_alpha_out[x] = (indicate_small * -8 + indicate_big * 7 + indicate_middle * (-q_w + round(q_w))) * grad_out * grad_scale;
-    //    grad_alpha_out[x] = 0;
+    }
+}
+
+template<typename scalar_t>
+__global__ void LSQ_input_cuda_kernel(const int8_t * q_weight, const scalar_t * __restrict__ grad_output, 
+                                scalar_t * __restrict__ grad_input, const long long int size){  
+    long long int x = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (x<size){
+       scalar_t q_w = q_weight[x];
+       scalar_t indicate_small = (q_w < -8);
+       scalar_t indicate_big = (q_w > 7);
+       scalar_t indicate_middle = 1.0 - indicate_small - indicate_big;
+       scalar_t grad_out = grad_output[x];
        grad_input[x] = indicate_middle * grad_out;
     }
 }
@@ -250,12 +271,12 @@ __global__ void linalg_normInt_cuda_kernel(const int8_t * in, float * linalg, in
   linalg[blockIdx.x] = sqrt(sum_val) * scale;
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation, torch::Tensor q_activation, int lsq_input_size, torch::Tensor first_transform, torch::Tensor second_transform, torch::Tensor x1_len, torch::Tensor x2_len, float scale1){
 // std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vector<double>, int> quantize_cuda(torch::Tensor x, int num_bits, torch::Tensor qy, float scaley, torch::Tensor lsq_activation){
     std::vector<double> time_vector;
     long long int nx = x.size(0);
     long long int nz = x.size(1);
-    long long int ny = qy.size(1);
+    long long int ny = qy.size(1) << 1;
 
     cudaDeviceSynchronize();
     clock_t time_quantize_start = clock();
@@ -334,6 +355,16 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
     //     x2_len.data_ptr<float>(),
     //     nx,nz,stride_x);
     // }));
+
+    // unpack int4 data
+    dim3 grid_unpack_qy((nz*ny/2-1)/block.x+1);
+    torch::Tensor unpack_qy = torch::empty({nz, ny}, option_transform);
+    int unpack_qy_size = nz * ny / 2;
+    unpack_cuda_kernel<<<grid_unpack_qy, block>>>(
+        qy.data_ptr<int8_t>(),
+        unpack_qy.data_ptr<int8_t>(),
+        unpack_qy_size);
+
     auto vec_norm = torch::cat({x1_len, x2_len});
     long long int len_norm = vec_norm.numel();
 
@@ -406,7 +437,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
 
     auto sample_x1 = first_transform.index({small_indices});
     auto sample_x2 = second_transform.index({large_indices});
-    auto sample_y = qy.t().contiguous();
+    auto sample_y = unpack_qy.t().contiguous();
     
     cudaDeviceSynchronize();
     clock_t time_sample_end = clock();
@@ -498,15 +529,31 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::vect
 
     // auto grad_output = output_low;
     float grad_scale = 1.0 / sqrt(lsq_activation.numel() * 7);
-    auto grad_alpha_out = torch::empty({nx,ny}, option_output);
+    auto grad_alpha_out = torch::empty({nx,lsq_input_size}, option_output);
     auto grad_input = torch::empty({nx,ny}, option_output);
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_cuda", ([&] {
-    LSQ_cuda_kernel<scalar_t><<<grid2, block>>>(
+    dim3 grid_scale((nx*lsq_input_size-1)/block.x+1);
+    long long int size_scale = nx*lsq_input_size;
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_scale_cuda", ([&] {
+    LSQ_scale_cuda_kernel<scalar_t><<<grid_scale, block>>>(
         lsq_activation.data_ptr<scalar_t>(), 
-        grad_output.data_ptr<scalar_t>(),
+        grad_output.index({Slice(), Slice({None, lsq_input_size})}).contiguous().data_ptr<scalar_t>(),
         grad_alpha_out.data_ptr<scalar_t>(),
+        grad_scale, size_scale);
+    }));
+    // unpack int4 data
+    dim3 grid_unpack_qactivation((nx*ny/2-1)/block.x+1);
+    torch::Tensor unpack_qactivation = torch::empty({nx, ny}, option_transform);
+    int unpack_qactivation_size = nx * ny / 2;
+    unpack_cuda_kernel<<<grid_unpack_qactivation, block>>>(
+        q_activation.data_ptr<int8_t>(),
+        unpack_qactivation.data_ptr<int8_t>(),
+        unpack_qactivation_size);
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(grad_output.scalar_type(), "LSQ_input_cuda", ([&] {
+    LSQ_input_cuda_kernel<scalar_t><<<grid2, block>>>(
+        unpack_qactivation.data_ptr<int8_t>(), 
+        grad_output.data_ptr<scalar_t>(),
         grad_input.data_ptr<scalar_t>(),
-        grad_scale, size);
+        size);
     }));
 
     auto grad_alpha = grad_alpha_out.sum().unsqueeze(0);

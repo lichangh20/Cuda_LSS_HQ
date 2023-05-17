@@ -269,6 +269,7 @@ def write_flops():
             print("    LssWeight flops is:", twolayer_cuda_speed_tflops[index], file=f)
             print("    LssInput flops is:", twolayerInput_cuda_speed_tflops[index], file=f)
             print("    Average flops is:", 3/(1/twolayerInput_cuda_speed_tflops[index] + 1/twolayer_cuda_speed_tflops[index] + 1/hadamard_cuda_speed_tflops[index]), file=f)
+            print("    Average speed up is:", (3/(1/twolayerInput_cuda_speed_tflops[index] + 1/twolayer_cuda_speed_tflops[index] + 1/hadamard_cuda_speed_tflops[index])) / (python_ordgemm_flops[index]), file=f)
             print("", file=f)
             
             

@@ -29,6 +29,7 @@ __global__ void quantize_cuda_kernel(const scalar_t * __restrict__  MatI, int8_t
         // MatO[x] = std::clamp(temp2 + bias, -8, 7);
         float temp = MatI[x] / scale;
         // float tmp = round(MatI[x] / scale);
+        
         MatLSQ[x] = temp;
         MatO[x] = std::clamp((int)(round(temp)), -8, 7);
     }
@@ -255,5 +256,5 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     time_vector.push_back(dequantize_time);
  
     // return output;
-    return std::make_tuple(output, q_x, q_y, lsq_x, lsq_y, time_vector, gemm, size);
+    return std::make_tuple(output, pack_qx, pack_qy, lsq_x, lsq_y, time_vector, gemm, size);
 }

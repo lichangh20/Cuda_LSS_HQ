@@ -6,6 +6,8 @@ import numpy as np
 import math
 import quantize_forward_easy
 import quantize_grad_input_speed
+import quantize_forward_int8 as qf # change to int8 later
+import quantize_grad_int8 as qg # backward 
 
 
 class MatrixConfig:
@@ -46,6 +48,8 @@ cuda_gemm_time = []
 cuda_dequantize_time = []
 cuda_LSQ_time = []
 python_ordgemm_flops = []
+int8_forward_flops = []
+int8_backward_flops = []
 cuda_input_quantize_time = []
 cuda_input_leverage_time = []
 cuda_input_sample_time = []
@@ -215,6 +219,39 @@ class PreconditionerTest:
         print()
         python_ordgemm_flops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
         
+    def Gemm_Int8(self, x, y):
+        total_time = 0
+        num_bits = 8
+        scale_x = (pow(2, num_bits-1) - 1) / max(abs(x.min()), abs(x.max()))
+        scale_y = (pow(2, num_bits-1) - 1) / max(abs(y.min()), abs(y.max()))
+        outForward = None
+        for i in range(mconfig.testTurn+1):
+            time1 = time.time()
+            outForward = qf.quantize(x, y, scale_x, scale_y)
+            torch.cuda.synchronize()
+            time2 = time.time()
+            if i>= 1:
+                total_time += time2 - time1
+        print("int8 forward gemm speed:")
+        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        print()
+        int8_forward_flops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 2 / total_time)
+        
+        grad_out = self.y_input # shape is right
+        scale_grad = (pow(2, num_bits-1) - 1) / max(abs(grad_out.min()), abs(grad_out.max()))
+        total_time = 0
+        for i in range(mconfig.testTurn+1):
+            time1 = time.time()
+            out = qg.quantize(grad_out, outForward[1], outForward[2], scale_x, scale_y, scale_grad)
+            torch.cuda.synchronize()
+            time2 = time.time()
+            if i>= 1:
+                total_time += time2 - time1
+        print("int8 backward gemm speed:")
+        print("    Tflops is:", 1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 4 / total_time)
+        print()
+        int8_backward_flops.append(1e-12 * mconfig.M * mconfig.K * mconfig.N * mconfig.testTurn * 4 / total_time)
+        
     def HadmardQuantize_cuda_speed(self, x, y):
         hadamard_time = 0
         quantize_time = 0
@@ -274,21 +311,25 @@ def write_flops():
             
 def draw_picture_flops():
     plt.figure(figsize=(25, 20))
-    bar_width = 0.17
+    bar_width = 0.15
     
     r1 = range(len(matrix_shape))
     r2 = [x + bar_width for x in r1]
     r3 = [x + bar_width for x in r2]
     r4 = [x + bar_width for x in r3]
     r5 = [x + bar_width for x in r4]
+    r6 = [x + bar_width for x in r5]
+    # r7 = [x + bar_width for x in r6]
     
     plt.bar(r1, python_ordgemm_flops, width=bar_width, edgecolor='white', label='FP16')
     plt.bar(r2, 3/(1/np.array(twolayer_cuda_speed_tflops) + 1/np.array(twolayerInput_cuda_speed_tflops) + 1/np.array(hadamard_cuda_speed_tflops)), width=bar_width, edgecolor='white', label='INT4')
     plt.bar(r3, hadamard_cuda_speed_tflops, width=bar_width, edgecolor='white', label='HQ')
     plt.bar(r4, twolayer_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LSSWeight')
     plt.bar(r5, twolayerInput_cuda_speed_tflops, width=bar_width, edgecolor='white', label='LSSAct')
+    plt.bar(r6, 2/(1/np.array(int8_forward_flops) + 1/np.array(int8_backward_flops)), width=bar_width, edgecolor='white', label='Int8')
+    # plt.bar(r7, int8_backward_flops, width=bar_width, edgecolor='white', label='Int8Backward')
     
-    plt.xticks(r2, matrix_shape, rotation=30, fontsize=45)
+    plt.xticks(r3, matrix_shape, rotation=30, fontsize=45)
     plt.yticks(fontsize=60)
     
     plt.legend(loc='upper left', fontsize=60)
@@ -298,8 +339,8 @@ def draw_picture_flops():
     plt.ylabel('Tflops', font)
     # plt.title('Comparison of FP16 MM, HQ and LSS operator',fontsize=60)
     
-    plt.savefig('./image/plot_flops.pdf', bbox_inches='tight')
-    plt.savefig('./image/plot_flops.svg', bbox_inches='tight', format='svg')
+    plt.savefig('./image/plot_flopsTmp.pdf', bbox_inches='tight')
+    plt.savefig('./image/plot_flopsTmp.svg', bbox_inches='tight', format='svg')
     
 def draw_picture_full():
     plt.figure(figsize=(20, 20))
@@ -386,8 +427,8 @@ def draw_picture_full2():
     
 if __name__=="__main__":
     # ,(15360,8704,10752), (),,(35840,35840,43520)
-    # for (m,n,k) in [(25600,25600,32768),(28672,28672,34816),(30720,30720,46080),(32768,32768,38912)]:
-    for (m,n,k) in [(4608,5120,6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
+    for (m,n,k) in [(15360,8704,10752), (25600,15360,12800), (35840, 12800, 8192)]:
+    # for (m,n,k) in [(4608,5120,6144),(5120,6144,8192),(6144,6144,9216),(7168,6656,8704),(8192,7680,9728),(15360,8704,10752)]:
         print("matrix multiplication of {M,N,K} = {%d, %d, %d}" % (m,n,k))
         mconfig.M = m
         mconfig.N = n
@@ -395,11 +436,12 @@ if __name__=="__main__":
         matrix_shape.append((mconfig.M, mconfig.N, mconfig.K))
         test = PreconditionerTest()
         returnList = test.TwoLayerQuantizeWeight_cuda_speed(test.x)
+        test.Gemm_Int8(test.x.t().contiguous(), test.y.t().contiguous())
         test.Gemm_ordinary_python(test.x, test.y)
         test.HadmardQuantize_cuda_speed(test.x.t().contiguous(), test.y.t().contiguous())
         test.TwoLayerQuantizeInput_cuda_speed(test.x, returnList)
 
     draw_picture_flops()
-    write_flops()
-    draw_picture_full()
-    draw_picture_full2()
+    # write_flops()
+    # draw_picture_full()
+    # draw_picture_full2()

@@ -11,4 +11,14 @@
 /quantize_grad_weight_LSS+LSQ/dist/*
 /quantize_grad_weight_LSS+LSQ/quantize_grad_weight_speed.egg-info/*
 
+/forward_kernel/build/*
+/forward_kernel/dist/*
+/forward_kernel/quantize_forward_int8.egg-info/*
+/forward_kernel/quantize_forward.egg-info/*
+
+/backward_kernel/build/*
+/backward_kernel/dist/*
+/backward_kernel/quantize_grad_int8.egg-info/*
+/backward_kernel/quantize_grad.egg-info/*
+
 */image/

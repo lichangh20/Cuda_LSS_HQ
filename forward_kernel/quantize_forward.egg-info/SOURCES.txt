@@ -1,7 +1,0 @@
-quantize_forward.cpp
-quantize_forward_kernel.cu
-setup.py
-quantize_forward.egg-info/PKG-INFO
-quantize_forward.egg-info/SOURCES.txt
-quantize_forward.egg-info/dependency_links.txt
-quantize_forward.egg-info/top_level.txt
